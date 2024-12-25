@@ -179,7 +179,7 @@ func (m *mqttClient) Run(cmd *cobra.Command, args []string) error {
 		SetPassword(mqttPassword).
 		SetAutoReconnect(true).
 		SetDefaultPublishHandler(m.handleIncomingMqtt).
-		SetWill(m.topic("/available"), "offline", 0, true)
+		SetWill(m.topic("/available"), "offline", 2, true)
 
 	m.client = mqtt.NewClient(m.options)
 	if token := m.client.Connect(); token.Wait() && token.Error() != nil {
@@ -205,7 +205,7 @@ func (m *mqttClient) Run(cmd *cobra.Command, args []string) error {
 			}
 			// Publish as offline if last connection was >30s ago.
 			if time.Now().Sub(m.lastConnect) > 30*time.Second {
-				m.client.Publish(m.topic("/available"), 0, true, "offline")
+				m.client.Publish(m.topic("/available"), 2, true, "offline")
 			}
 			// Restart Wifi interface if > wifi_restart_time.
 			if wifiRestartTime > 0 && time.Now().Sub(m.lastConnect) > wifiRestartTime {
@@ -221,7 +221,7 @@ func (m *mqttClient) Run(cmd *cobra.Command, args []string) error {
 
 func (m *mqttClient) publish(topic, payload string) {
 	if cache := m.mqttData[topic]; cache != payload {
-		m.client.Publish(m.topic(topic), 0, false, payload)
+		m.client.Publish(m.topic(topic), 2, true, payload)
 		m.mqttData[topic] = payload
 	}
 }
@@ -255,12 +255,12 @@ func (m *mqttClient) handleIncomingMqtt(mqtt_client mqtt.Client, msg mqtt.Messag
 		case "off":
 			m.enabled = false
 			m.phev.Close()
-			m.client.Publish(m.topic("/available"), 0, true, "offline")
+			m.client.Publish(m.topic("/available"), 2, true, "offline")
 		case "on":
 			m.enabled = true
 		case "restart":
 			m.enabled = true
-			m.client.Publish(m.topic("/available"), 0, true, "offline")
+			m.client.Publish(m.topic("/available"), 2, true, "offline")
 			m.phev.Close()
 		}
 	} else if msg.Topic() == m.topic("/set/parkinglights") {
@@ -375,7 +375,7 @@ func (m *mqttClient) handlePhev(cmd *cobra.Command) error {
 	if err := m.phev.Start(); err != nil {
 		return err
 	}
-	m.client.Publish(m.topic("/available"), 0, true, "online")
+	m.client.Publish(m.topic("/available"), 2, true, "online")
 	m.everPublishedBatteryLevel = false
 	defer func() {
 		m.lastConnect = time.Now()
@@ -799,8 +799,7 @@ func (m *mqttClient) publishHomeAssistantDiscovery(vin, topic, name string) {
 		for in, out := range mappings {
 			d = strings.Replace(d, in, out, -1)
 		}
-		m.client.Publish(topic, 0, false, d)
-		//m.client.Publish(topic, 0, false, "{}")
+		m.client.Publish(topic, 2, true, d)
 	}
 }
 
