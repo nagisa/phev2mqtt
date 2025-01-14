@@ -232,13 +232,18 @@ func (c *Client) nextRecvMsg(deadline time.Time) (*protocol.PhevMessage, error) 
 // Sends periodic pings to the car.
 func (c *Client) pinger() {
 	pingSeq := byte(0xa)
+	interval, err := SdWatchdogInterval(5000 * time.Millisecond)
+	if err != nil {
+		log.Warnf("pinger interval could not be determined from systemd environment: %v", err)
+	}
+	log.Infof("pinger interval: %v", interval)
 	ticker := time.NewTicker(1000 * time.Millisecond)
 	defer ticker.Stop()
 	for t := range ticker.C {
 		switch {
 		case c.closed:
 			return
-		case t.Sub(c.lastRx) < 5000*time.Millisecond:
+		case t.Sub(c.lastRx) < interval:
 			continue
 		}
 		c.Send <- &protocol.PhevMessage{
@@ -317,6 +322,9 @@ func (c *Client) reader() {
 		}
 		c.lastRx = time.Now()
 		log.Tracef("%%PHEV_TCP_RECV_DATA%%: %s", hex.EncodeToString(data[:n]))
+		if _, err := SdNotify(false, SdNotifyWatchdog); err != nil {
+			log.Warnf("could not reset systemd watchdog: %v", err)
+		}
 		messages := protocol.NewFromBytes(data[:n], c.key)
 		for _, m := range messages {
 			log.Debugf("%%PHEV_TCP_RECV_MSG%%: [%02x] %s", m.Xor, m.ShortForm())
