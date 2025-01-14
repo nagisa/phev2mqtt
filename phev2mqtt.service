@@ -1,0 +1,33 @@
+[Unit]
+Description=Mitsubishi Outlander PHEV MQTT proxy
+
+[Service]
+DynamicUser=1
+WatchdogSecs=30s
+Environment=GOMAXPROCS=1
+ExecStart=phev2mqtt client mqtt
+LimitMEMLOCK=0
+LockPersonality=true
+PrivateDevices=true
+PrivateUsers=yes
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectProc=noaccess
+Restart=always
+RestartSec=5
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+Type=exec
+UMask=77
+
+[Install]
+WantedBy=multi-user.target
