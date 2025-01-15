@@ -144,7 +144,9 @@ func (c *Client) Close() error {
 
 // Connect connects to the Phev.
 func (c *Client) Connect() error {
-	conn, err := net.Dial("tcp", c.address)
+    SdNotify(false, SdNotifyWatchdog);
+    interval, _ := SdWatchdogInterval(5000 * time.Millisecond)
+	conn, err := net.DialTimeout("tcp", c.address, interval)
 	if err != nil {
 		return err
 	}
