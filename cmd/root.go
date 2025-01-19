@@ -17,12 +17,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 package cmd
 
 import (
-	"fmt"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
-	"os"
-
-	"github.com/spf13/viper"
 )
 
 var (
@@ -49,10 +45,6 @@ var rootCmd = &cobra.Command{
 			})
 		}
 	},
-
-	// Uncomment the following line if your bare application
-	// has an action associated with it:
-	// Run: func(cmd *cobra.Command, args []string) { },
 }
 
 // Execute adds all child commands to the root command and sets flags appropriately.
@@ -62,41 +54,6 @@ func Execute() {
 }
 
 func init() {
-	cobra.OnInitialize(initConfig)
-
-	// Here you will define your flags and configuration settings.
-	// Cobra supports persistent flags, which, if defined here,
-	// will be global for your application.
-
-	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.phev2mqtt.yaml)")
 	rootCmd.PersistentFlags().StringVarP(&logLevel, "verbosity", "v", "info", "logging level to use")
 	rootCmd.PersistentFlags().BoolVarP(&logTimes, "log_timestamps", "t", false, "logging with timestamps")
-
-	// Cobra also supports local flags, which will only run
-	// when this action is called directly.
-	// rootCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
-}
-
-// initConfig reads in config file and ENV variables if set.
-func initConfig() {
-	if cfgFile != "" {
-		// Use config file from the flag.
-		viper.SetConfigFile(cfgFile)
-	} else {
-		// Find home directory.
-		home, err := os.UserHomeDir()
-		cobra.CheckErr(err)
-
-		// Search config in home directory with name ".phev2mqtt" (without extension).
-		viper.AddConfigPath(home)
-		viper.SetConfigType("yaml")
-		viper.SetConfigName(".phev2mqtt")
-	}
-
-	viper.AutomaticEnv() // read in environment variables that match
-
-	// If a config file is found, read it in.
-	if err := viper.ReadInConfig(); err == nil {
-		fmt.Fprintln(os.Stderr, "Using config file:", viper.ConfigFileUsed())
-	}
 }
