@@ -823,16 +823,6 @@ func (m *mqttClient) publishHomeAssistantDiscovery(vin, topic, name string) {
 
 func init() {
 	clientCmd.AddCommand(mqttCmd)
-
-	// Here you will define your flags and configuration settings.
-
-	// Cobra supports Persistent Flags which will work for this command
-	// and all subcommands, e.g.:
-	// mqttCmd.PersistentFlags().String("foo", "", "A help for foo")
-
-	// Cobra supports local flags which will only run when this command
-	// is called directly, e.g.:
-	// mqttCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
 	mqttCmd.Flags().String("mqtt_server", "tcp://127.0.0.1:1883", "Address of MQTT server")
 	mqttCmd.Flags().String("mqtt_username", "", "Username to login to MQTT server")
 	mqttCmd.Flags().String("mqtt_password", "", "Password to login to MQTT server")

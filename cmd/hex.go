@@ -48,14 +48,4 @@ should be in hex format, e;g 'dc2b2f762f7f'.`,
 
 func init() {
 	decodeCmd.AddCommand(hexCmd)
-
-	// Here you will define your flags and configuration settings.
-
-	// Cobra supports Persistent Flags which will work for this command
-	// and all subcommands, e.g.:
-	// hexCmd.PersistentFlags().String("foo", "", "A help for foo")
-
-	// Cobra supports local flags which will only run when this command
-	// is called directly, e.g.:
-	// hexCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
 }
