@@ -37,7 +37,7 @@
                 phevAddress = mkOption {
                     description = "The IP address that the PHEV uses (is static & doesn't change)";
                     type = types.str;
-                    default = "192.168.8.46";
+                    default = "192.168.8.46:8080";
                 };
                 mqttBroker = mkOption {
                     description = "Address of the MQTT broker";
