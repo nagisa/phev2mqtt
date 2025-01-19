@@ -181,34 +181,8 @@ network={
 
 ```
 
-- Add the following to `/etc/systemd/system/phev2mqtt.service`, updating the MQTT address to
-suit your setup:
-
-```
-[Unit]
-Description=phev2mqtt service script
-StartLimitIntervalSec=5
-After=syslog.target network.target
-
-[Service]
-Type=exec
-ExecStart=/usr/local/bin/phev2mqtt --config=/dev/null client mqtt --mqtt_server tcp://192.168.0.88:1883 -v=debug
-
-# Restart script if stopped
-Restart=always
-# Wait 30s before restart
-RestartSec=30s
-
-# Tag things in the log
-# View with: sudo journalctl -f -u phev2mqtt -o cat
-SyslogIdentifier=phev2mqtt
-
-StandardOutput=syslog
-StandardError=syslog
-
-[Install]
-WantedBy=multi-user.target
-```
+- Copy `phev2mqtt.service.example` to `/etc/systemd/system/phev2mqtt.service`, updating the MQTT
+address to suit your setup.
 
 - Copy the `phev2mqtt` binary to /usr/local/bin and make sure it's executable.
 

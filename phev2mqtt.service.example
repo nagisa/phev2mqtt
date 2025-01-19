@@ -1,11 +1,12 @@
 [Unit]
 Description=Mitsubishi Outlander PHEV MQTT proxy
+StartLimitIntervalSec=0
 
 [Service]
-DynamicUser=1
+ExecStart=/usr/local/bin/phev2mqtt client mqtt --mqtt_server tcp://192.168.0.88:1883
 WatchdogSecs=30s
+DynamicUser=1
 Environment=GOMAXPROCS=1
-ExecStart=phev2mqtt client mqtt
 LimitMEMLOCK=0
 LockPersonality=true
 PrivateDevices=true
@@ -27,7 +28,7 @@ SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallFilter=~@privileged
 Type=exec
-UMask=77
+UMask=0077
 
 [Install]
 WantedBy=multi-user.target
