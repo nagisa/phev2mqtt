@@ -26,6 +26,7 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+	"context"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 	log "github.com/sirupsen/logrus"
@@ -230,6 +231,7 @@ func (m *mqttClient) handleIncomingMqtt(mqtt_client mqtt.Client, msg mqtt.Messag
 	log.Infof("Topic: [%s] Payload: [%s]", msg.Topic(), msg.Payload())
 
 	topicParts := strings.Split(msg.Topic(), "/")
+	context := context.Background()
 	if strings.HasPrefix(msg.Topic(), m.topic("/set/register/")) {
 		if len(topicParts) != 4 {
 			log.Infof("Bad topic format [%s]", msg.Topic())
@@ -245,7 +247,7 @@ func (m *mqttClient) handleIncomingMqtt(mqtt_client mqtt.Client, msg mqtt.Messag
 			log.Infof("Bad payload [%s]: %v", msg.Payload(), err)
 			return
 		}
-		if err := m.phev.SetRegister(register[0], data); err != nil {
+		if err := m.phev.SetRegister(context, register[0], data); err != nil {
 			log.Infof("Error setting register %02x: %v", register[0], err)
 			return
 		}
@@ -266,7 +268,7 @@ func (m *mqttClient) handleIncomingMqtt(mqtt_client mqtt.Client, msg mqtt.Messag
 	} else if msg.Topic() == m.topic("/set/parkinglights") {
 		values := map[string]byte{"on": 0x1, "off": 0x2}
 		if v, ok := values[strings.ToLower(string(msg.Payload()))]; ok {
-			if err := m.phev.SetRegister(0xb, []byte{v}); err != nil {
+			if err := m.phev.SetRegister(context, 0xb, []byte{v}); err != nil {
 				log.Infof("Error setting register 0xb: %v", err)
 				return
 			}
@@ -274,24 +276,24 @@ func (m *mqttClient) handleIncomingMqtt(mqtt_client mqtt.Client, msg mqtt.Messag
 	} else if msg.Topic() == m.topic("/set/headlights") {
 		values := map[string]byte{"on": 0x1, "off": 0x2}
 		if v, ok := values[strings.ToLower(string(msg.Payload()))]; ok {
-			if err := m.phev.SetRegister(0xa, []byte{v}); err != nil {
+			if err := m.phev.SetRegister(context, 0xa, []byte{v}); err != nil {
 				log.Infof("Error setting register 0xb: %v", err)
 				return
 			}
 		}
 	} else if msg.Topic() == m.topic("/set/cancelchargetimer") {
-		if err := m.phev.SetRegister(0x17, []byte{0x1}); err != nil {
+		if err := m.phev.SetRegister(context, 0x17, []byte{0x1}); err != nil {
 			log.Infof("Error setting register 0x17: %v", err)
 			return
 		}
-		if err := m.phev.SetRegister(0x17, []byte{0x11}); err != nil {
+		if err := m.phev.SetRegister(context, 0x17, []byte{0x11}); err != nil {
 			log.Infof("Error setting register 0x17: %v", err)
 			return
 		}
 	} else if strings.HasPrefix(msg.Topic(), m.topic("/set/climate/state")) {
 		payload := strings.ToLower(string(msg.Payload()))
 		if payload == "reset" {
-			if err := m.phev.SetRegister(protocol.SetAckPreACTermRegister, []byte{0x1}); err != nil {
+			if err := m.phev.SetRegister(context, protocol.SetAckPreACTermRegister, []byte{0x1}); err != nil {
 				log.Infof("Error acknowledging Pre-AC termination: %v", err)
 				return
 			}
@@ -327,7 +329,7 @@ func (m *mqttClient) handleIncomingMqtt(mqtt_client mqtt.Client, msg mqtt.Messag
 			registerPayload[0] = 0x0
 			registerPayload[1] = 0x0
 			registerPayload[6] = mode | duration
-			if err := m.phev.SetRegister(protocol.SetACModeRegisterMY14, registerPayload); err != nil {
+			if err := m.phev.SetRegister(context, protocol.SetACModeRegisterMY14, registerPayload); err != nil {
 				log.Infof("Error setting AC mode: %v", err)
 				return
 			}
@@ -337,7 +339,7 @@ func (m *mqttClient) handleIncomingMqtt(mqtt_client mqtt.Client, msg mqtt.Messag
 			if mode == 0x0 {
 				acEnabled = 0x01
 			}
-			if err := m.phev.SetRegister(protocol.SetACEnabledRegisterMY14, []byte{acEnabled}); err != nil {
+			if err := m.phev.SetRegister(context, protocol.SetACEnabledRegisterMY14, []byte{acEnabled}); err != nil {
 				log.Infof("Error setting AC enabled state: %v", err)
 				return
 			}
@@ -346,7 +348,7 @@ func (m *mqttClient) handleIncomingMqtt(mqtt_client mqtt.Client, msg mqtt.Messag
 			if mode == 0x0 {
 				state = 0x1
 			}
-			if err := m.phev.SetRegister(protocol.SetACModeRegisterMY18, []byte{state, mode, duration, 0x0}); err != nil {
+			if err := m.phev.SetRegister(context, protocol.SetACModeRegisterMY18, []byte{state, mode, duration, 0x0}); err != nil {
 				log.Infof("Error setting AC mode: %v", err)
 				return
 			}
@@ -384,11 +386,27 @@ func (m *mqttClient) handlePhev(cmd *cobra.Command) error {
 	var encodingErrorCount = 0
 	var lastEncodingError time.Time
 
-	updaterTicker := time.NewTicker(m.updateInterval)
+    interval, _ := client.SdWatchdogInterval(5000 * time.Millisecond)
+	if m.updateInterval < interval {
+		interval = m.updateInterval
+	}
+	updaterTicker := time.NewTicker(interval)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func(ctx context.Context) {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				m.phev.SetRegister(ctx, 0x6, []byte{0x3})
+				time.Sleep(interval)
+			}
+		}
+	}(ctx)
+
 	for {
 		select {
-		case <-updaterTicker.C:
-			m.phev.SetRegister(0x6, []byte{0x3})
 		case msg, ok := <-m.phev.Recv:
 			if !ok {
 				log.Infof("Connection closed.")
@@ -397,10 +415,10 @@ func (m *mqttClient) handlePhev(cmd *cobra.Command) error {
 			}
 			switch msg.Type {
 			case protocol.CmdInBadEncoding:
-				if time.Now().Sub(lastEncodingError) > 15*time.Second {
+				if time.Now().Sub(lastEncodingError) > 30*time.Second {
 					encodingErrorCount = 0
 				}
-				if encodingErrorCount > 50 {
+				if encodingErrorCount > 5 {
 					m.phev.Close()
 					updaterTicker.Stop()
 					return fmt.Errorf("Disconnecting due to too many errors")

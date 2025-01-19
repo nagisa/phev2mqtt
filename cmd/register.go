@@ -19,6 +19,7 @@ package cmd
 import (
 	"fmt"
 	"time"
+	"context"
 
 	"github.com/buxtronix/phev2mqtt/client"
 	"github.com/buxtronix/phev2mqtt/protocol"
@@ -119,7 +120,7 @@ func runRegister(cmd *cobra.Command, args []string) {
 	} else {
 		fmt.Printf("Attempting to register to car (VIN: %s)...\n", vin)
 	}
-	if err := cl.SetRegister(reg, []byte{0x1}); err != nil {
+	if err := cl.SetRegister(context.Background(), reg, []byte{0x1}); err != nil {
 		log.Errorf("Failed to (un)register: %v", err)
 		return
 	}

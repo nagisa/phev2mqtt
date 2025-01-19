@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"context"
 
 	"github.com/buxtronix/phev2mqtt/client"
 	//	log "github.com/sirupsen/logrus"
@@ -100,7 +101,7 @@ func runSet(cmd *cobra.Command, args []string) {
 
 	for _, reg := range setRegisters {
 		fmt.Printf("Setting register 0x%x to 0x%s\n", reg.register, hex.EncodeToString(reg.value))
-		if err := cl.SetRegister(reg.register, reg.value); err != nil {
+		if err := cl.SetRegister(context.Background(), reg.register, reg.value); err != nil {
 			panic(err)
 		}
 		time.Sleep(sendInterval)
