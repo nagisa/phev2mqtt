@@ -9,6 +9,7 @@ import (
 	"net"
 	"sync"
 	"time"
+	"context"
 
 	"github.com/buxtronix/phev2mqtt/protocol"
 )
@@ -152,8 +153,6 @@ func (c *Client) Connect() error {
 	go c.reader()
 	go c.writer()
 	go c.manage()
-	go c.pinger()
-
 	return nil
 }
 
@@ -180,7 +179,7 @@ func (c *Client) Start() error {
 }
 
 // SetRegister sets a register on the car.
-func (c *Client) SetRegister(register byte, value []byte) error {
+func (c *Client) SetRegister(ctx context.Context, register byte, value []byte) error {
 	setRegister := func(xor byte) {
 		c.Send <- &protocol.PhevMessage{
 			Type:     protocol.CmdOutSend,
@@ -198,12 +197,17 @@ SETREG:
 	setRegister(xor)
 	for {
 		select {
+		case <-ctx.Done():
+			return fmt.Errorf("cancelled setting of register %02x", register)
 		case <-timer:
 			return fmt.Errorf("timed out attempting to set register %02x", register)
 		case msg, ok := <-l.C:
 			if !ok {
 				return fmt.Errorf("listener channel closed")
 			}
+			// FIXME: this should not be a part of SetRegister, but rather a part of
+			// sender/receiver as this is where it the multiple concurrent SetRegister operations
+			// get serialized.
 			if msg.Type == protocol.CmdInBadEncoding {
 				xor = msg.Data[0]
 				goto SETREG
@@ -211,7 +215,6 @@ SETREG:
 			if msg.Type == protocol.CmdInResp && msg.Ack == protocol.Ack && msg.Register == register {
 				return nil
 			}
-
 		}
 	}
 }
@@ -227,36 +230,6 @@ func (c *Client) nextRecvMsg(deadline time.Time) (*protocol.PhevMessage, error) 
 				return nil, fmt.Errorf("error: receive channel closed")
 			}
 			return m, nil
-		}
-	}
-}
-
-// Sends periodic pings to the car.
-func (c *Client) pinger() {
-	pingSeq := byte(0xa)
-	interval, err := SdWatchdogInterval(5000 * time.Millisecond)
-	if err != nil {
-		log.Warnf("pinger interval could not be determined from systemd environment: %v", err)
-	}
-	log.Infof("pinger interval: %v", interval)
-	ticker := time.NewTicker(1000 * time.Millisecond)
-	defer ticker.Stop()
-	for t := range ticker.C {
-		switch {
-		case c.closed:
-			return
-		case t.Sub(c.lastRx) < interval:
-			continue
-		}
-		c.Send <- &protocol.PhevMessage{
-			Type:     protocol.CmdOutPingReq,
-			Ack:      protocol.Request,
-			Register: pingSeq,
-			Data:     []byte{0x0},
-		}
-		pingSeq++
-		if pingSeq > 0x63 {
-			pingSeq = 0
 		}
 	}
 }
