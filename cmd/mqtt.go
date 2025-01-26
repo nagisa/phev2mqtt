@@ -386,7 +386,7 @@ func (m *mqttClient) handlePhev(cmd *cobra.Command) error {
 	var encodingErrorCount = 0
 	var lastEncodingError time.Time
 
-    interval, _ := client.SdWatchdogInterval(5000 * time.Millisecond)
+    interval, _ := client.SdWatchdogInterval(600 * time.Second)
 	if m.updateInterval < interval {
 		interval = m.updateInterval
 	}

@@ -88,7 +88,7 @@
                             # response in `-w 60` seconds. It will send an ICMP ping every `-i
                             # 5` second on the `wirelessInterface`.
                             ${pkgs.iputils}/bin/ping ${cfg.phevAddress} -w 30 -c 1 -i 5 -I ${cfg.wirelessInterface} -q > /dev/null
-                            ${pkgs.coreutils}/bin/sleep 15
+                            ${pkgs.coreutils}/bin/sleep 60
                         done
                     '';
                     serviceConfig = {
@@ -104,7 +104,7 @@
                     serviceConfig = {
                         Type = "exec";
                         ExecStart = "${pkgs.phev2mqtt}/bin/phev2mqtt client mqtt ${toString flags}";
-                        WatchdogSec = "60s";
+                        WatchdogSec = 1200;
                         Restart = "always";
                         RestartSec = 5;
                         DynamicUser = 1;

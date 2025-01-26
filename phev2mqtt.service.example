@@ -4,7 +4,7 @@ StartLimitIntervalSec=0
 
 [Service]
 ExecStart=/usr/local/bin/phev2mqtt client mqtt --mqtt_server tcp://192.168.0.88:1883
-WatchdogSecs=30s
+WatchdogSec=600s
 DynamicUser=1
 Environment=GOMAXPROCS=1
 LimitMEMLOCK=0
