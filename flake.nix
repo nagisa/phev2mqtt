@@ -37,7 +37,7 @@
                 phevAddress = mkOption {
                     description = "The IP address that the PHEV uses (is static & doesn't change)";
                     type = types.str;
-                    default = "192.168.8.46:8080";
+                    default = "192.168.8.46";
                 };
                 mqttBroker = mkOption {
                     description = "Address of the MQTT broker";
@@ -54,7 +54,7 @@
                 cfg = config.services.phev2mqtt;
                 flags = [
                     "--wifi_restart_command" "''"
-                    "--address" cfg.phevAddress
+                    "--address" "${cfg.phevAddress}:8080"
                     "--mqtt_server" cfg.mqttBroker
                 ] ++ cfg.flags;
             in mkIf cfg.enable {
