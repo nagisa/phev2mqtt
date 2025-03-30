@@ -14,7 +14,7 @@
                     src = ./.;
                     filter = p: t: cleanSourceFilter p t || p == "flake.nix" || p == "flake.lock";
                 };
-                vendorHash = "sha256-GIH27HV5IuP5h8rQoM0N5LqLBoqfMUHItjwUf7Qgt+M=";
+                vendorHash = "sha256-1Ci2ULhcAQzmXA6Ms1+l20rXRUa0lNxRW51hGfBPKKk=";
                 buildInputs = [ final.libpcap ];
                 meta = {
                     license = licenses.gpl3;
@@ -22,7 +22,7 @@
             };
         };
 
-        nixosModules.default = { config, lib, pkgs, ... }: with lib; {
+        nixosModules.default = { config, lib, pkgs, utils, ... }: with lib; {
             options.services.phev2mqtt = {
                 enable = mkEnableOption "Enable the Mitsubishi Outlander PHEV MQTT proxy service.";
                 package = mkOption {
@@ -103,7 +103,9 @@
                     unitConfig.StartLimitIntervalSec = "0s";
                     serviceConfig = {
                         Type = "exec";
-                        ExecStart = "${pkgs.phev2mqtt}/bin/phev2mqtt client mqtt ${toString flags}";
+                        ExecStart = utils.escapeSystemdExecArgs (
+                            [ "${pkgs.phev2mqtt}/bin/phev2mqtt"  "client" "mqtt" ] ++ flags
+                        );
                         WatchdogSec = 1200;
                         Restart = "always";
                         RestartSec = 5;
