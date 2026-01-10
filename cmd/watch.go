@@ -19,6 +19,7 @@ package cmd
 import (
 	"encoding/hex"
 	"time"
+	"context"
 
 	"github.com/buxtronix/phev2mqtt/client"
 	"github.com/buxtronix/phev2mqtt/protocol"
@@ -42,11 +43,11 @@ func Run(cmd *cobra.Command, args []string) {
 		panic(err)
 	}
 
-	if err := cl.Connect(); err != nil {
+	if err := cl.Connect(context.Background()); err != nil {
 		panic(err)
 	}
 
-	if err := cl.Start(); err != nil {
+	if err := cl.Start(context.Background()); err != nil {
 		panic(err)
 	}
 

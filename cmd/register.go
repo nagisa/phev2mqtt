@@ -67,11 +67,11 @@ func runRegister(cmd *cobra.Command, args []string) {
 		panic(err)
 	}
 
-	if err := cl.Connect(); err != nil {
+	if err := cl.Connect(context.Background()); err != nil {
 		panic(err)
 	}
 
-	if err := cl.Start(); err != nil {
+	if err := cl.Start(context.Background()); err != nil {
 		panic(err)
 	}
 	fmt.Printf("Client connected and started!\n")

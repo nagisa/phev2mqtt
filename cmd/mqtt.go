@@ -27,9 +27,15 @@ import (
 	"strings"
 	"time"
 	"context"
+	"net"
+	"syscall"
+	"os"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
+	netlink "github.com/vishvananda/netlink"
 	log "github.com/sirupsen/logrus"
+	"golang.org/x/net/icmp"
+	"golang.org/x/net/ipv4"
 )
 
 const defaultWifiRestartCmd = "sudo ip link set wlan0 down && sleep 3 && sudo ip link set wlan0 up"
@@ -134,10 +140,12 @@ type mqttClient struct {
 	client         mqtt.Client
 	options        *mqtt.ClientOptions
 	mqttData       map[string]string
-	updateInterval time.Duration
 
-	phev        *client.Client
-	lastConnect time.Time
+	interfaceName  string
+	pingInterval   time.Duration
+
+	phev           *client.Client
+	updateInterval time.Duration
 	everPublishedBatteryLevel bool
 
 	prefix string
@@ -163,12 +171,17 @@ func (m *mqttClient) Run(cmd *cobra.Command, args []string) error {
 	m.prefix, _ = cmd.Flags().GetString("mqtt_topic_prefix")
 	m.haDiscovery, _ = cmd.Flags().GetBool("ha_discovery")
 	m.haDiscoveryPrefix, _ = cmd.Flags().GetString("ha_discovery_prefix")
-
 	m.updateInterval, err = cmd.Flags().GetDuration("update_interval")
+	m.pingInterval, err = cmd.Flags().GetDuration("ping_interval")
 	if err != nil {
 		return err
 	}
-	wifiRestartTime, err := cmd.Flags().GetDuration("wifi_restart_time")
+	watchdogInterval, _ := client.SdWatchdogInterval(600 * time.Second)
+	if m.pingInterval > watchdogInterval {
+		m.pingInterval = watchdogInterval
+	}
+
+	m.interfaceName, err = cmd.Flags().GetString("interface")
 	if err != nil {
 		return err
 	}
@@ -204,19 +217,8 @@ func (m *mqttClient) Run(cmd *cobra.Command, args []string) error {
 			if err := m.handlePhev(cmd); err != nil {
 				log.Error(err)
 			}
-			// Publish as offline if last connection was >30s ago.
-			if time.Now().Sub(m.lastConnect) > 30*time.Second {
-				m.client.Publish(m.topic("/available"), 2, true, "offline")
-			}
-			// Restart Wifi interface if > wifi_restart_time.
-			if wifiRestartTime > 0 && time.Now().Sub(m.lastConnect) > wifiRestartTime {
-				if err := restartWifi(cmd); err != nil {
-					log.Errorf("Error restarting wifi: %v", err)
-				}
-			}
+			time.Sleep(time.Second)
 		}
-
-		time.Sleep(time.Second)
 	}
 }
 
@@ -362,56 +364,193 @@ func (m *mqttClient) handleIncomingMqtt(mqtt_client mqtt.Client, msg mqtt.Messag
 	}
 }
 
+// Determine if the WiFi link is in a good enough state to start connecting to PHEV.
+//
+// A common situation where this matters is the vehicle driving away out of the WiFi range.
+// At which point, why bother spinning our wheels? Kernel will notify us via netlink as
+// soon as the link state changes again (i.e. vehicle enters the driveway.)
+func (m *mqttClient) evaluateLinkState() bool {
+	link, err := netlink.LinkByName(m.interfaceName)
+	// WiFi interface is not present altogether.
+	if err != nil {
+		log.Errorf("interface `%s` is not available: %v", m.interfaceName, err);
+		m.client.Publish(m.topic("/available"), 2, true, "offline")
+		return false
+	}
+	// WiFi is not associated. E.g. vehicle not in the driveway.
+	if link.Attrs().OperState != netlink.OperUp {
+		log.Debugf("interface `%s` is not up", m.interfaceName);
+		m.client.Publish(m.topic("/available"), 2, true, "offline")
+		return false
+	}
+
+	addrs, _ := netlink.AddrList(link, netlink.FAMILY_V4)
+	log.Debugf("interface `%s` is up and has following addresses: %v", m.interfaceName, addrs);
+	var validIP net.IP = nil
+	for _, addr := range addrs {
+		ip := addr.IP
+		if ip.IsLoopback() {
+			continue
+		}
+		if ip.IsLinkLocalUnicast() {
+			continue
+		}
+		validIP = ip
+		break
+	}
+
+	if validIP == nil {
+		m.client.Publish(m.topic("/available"), 2, true, "waiting-for-ip")
+		return false
+	} else {
+		return true
+	}
+}
+
+// Send out an ICMP message to the PHEV.
+//
+// We don't really care if PHEV responds, the only reason is to keep the connection
+// alive and try to prevent PHEV from going to some sort of weird sleep state where
+// it entirely stops communicating with us.
+//
+// If you care to see the full comms, use tcpdump on your wireless interface.
+func (m *mqttClient) pingTarget(ctx context.Context, address string) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		host = address
+	}
+	resolver := net.DefaultResolver
+	ips, err := resolver.LookupIP(ctx, "ip4", host)
+	if err != nil || len(ips) == 0 {
+		return fmt.Errorf("could not resolve %s: %v", host, err)
+	}
+	dstIP := ips[0]
+	lc := net.ListenConfig{
+		Control: func(network, address string, c syscall.RawConn) error {
+			return c.Control(func(fd uintptr) {
+				syscall.BindToDevice(int(fd), m.interfaceName)
+			})
+		},
+	}
+	conn, err := lc.ListenPacket(ctx, "ip4:icmp", "0.0.0.0")
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	msg := icmp.Message{
+		Type: ipv4.ICMPTypeEcho,
+		Code: 0,
+		Body: &icmp.Echo{
+			ID: os.Getpid() & 0xffff, Seq: 1,
+			Data: []byte("phev2mqtt"),
+		},
+	}
+	wb, err := msg.Marshal(nil)
+	if err != nil {
+		return err
+	}
+	_, err = conn.WriteTo(wb, &net.IPAddr{IP: dstIP})
+	return err
+}
+
 func (m *mqttClient) handlePhev(cmd *cobra.Command) error {
 	var err error
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pingTicker := time.NewTicker(m.pingInterval)
+	defer pingTicker.Stop()
+	updateTicker := time.NewTicker(m.updateInterval)
+	defer updateTicker.Stop()
+
 	address, _ := cmd.Flags().GetString("address")
 	m.phev, err = client.New(client.AddressOption(address))
 	if err != nil {
 		return err
 	}
 
-	if err := m.phev.Connect(); err != nil {
-		return err
+	// Wait for the interface to become available.
+	linkChanges := make(chan netlink.LinkUpdate)
+	netlinkOk := false
+	if err := netlink.LinkSubscribe(linkChanges, ctx.Done()); err != nil {
+		log.Errorf("could not subscribe to netlink link changes: %v", err)
+		netlinkOk = false
+	}
+	addrChanges := make(chan netlink.AddrUpdate)
+    if err := netlink.AddrSubscribe(addrChanges, ctx.Done()); err != nil {
+		log.Errorf("could not subscribe to netlink address changes: %v", err)
+		netlinkOk = false
+    }
+	if !m.evaluateLinkState() && netlinkOk {
+		loop: for {
+			select {
+			case <-pingTicker.C:
+				if _, err := client.SdNotify(false, client.SdNotifyWatchdog); err != nil {
+					log.Warnf("could not reset systemd watchdog: %v", err)
+				}
+			case <-linkChanges:
+				if m.evaluateLinkState() {
+					break loop
+				}
+			case <-addrChanges:
+				if m.evaluateLinkState() {
+					break loop
+				}
+			}
+		}
 	}
 
-	if err := m.phev.Start(); err != nil {
-		return err
-	}
-	m.client.Publish(m.topic("/available"), 2, true, "online")
+	m.client.Publish(m.topic("/available"), 2, true, "connecting")
 	m.everPublishedBatteryLevel = false
-	defer func() {
-		m.lastConnect = time.Now()
-	}()
-
 	var encodingErrorCount = 0
 	var lastEncodingError time.Time
 
-    interval, _ := client.SdWatchdogInterval(600 * time.Second)
-	if m.updateInterval < interval {
-		interval = m.updateInterval
-	}
-	updaterTicker := time.NewTicker(interval)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go func(ctx context.Context) {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-				m.phev.SetRegister(ctx, 0x6, []byte{0x3})
-				time.Sleep(interval)
-			}
+	connectResult := make(chan error)
+	go func() {
+		if err := m.phev.Connect(ctx); err != nil {
+			connectResult <- err
+			return
 		}
-	}(ctx)
+		if err := m.phev.Start(ctx); err != nil {
+			connectResult <- err
+			return
+		}
+		connectResult <- nil
+	}()
 
 	for {
 		select {
+		case err := <- connectResult:
+			if err == nil {
+				m.client.Publish(m.topic("/available"), 2, true, "online")
+			} else {
+				return err
+			}
+		case <-linkChanges:
+		 	if !m.evaluateLinkState() {
+				return fmt.Errorf("interface disconnected")
+			}
+		case <-addrChanges:
+		 	if !m.evaluateLinkState() {
+				return fmt.Errorf("interface disconnected")
+			}
+		case <-updateTicker.C:
+			go func(m *mqttClient, ctx context.Context) {
+				if err := m.phev.SetRegister(ctx, 0x6, []byte{0x3}); err != nil {
+					log.Warnf("no response to update request: ", err)
+				}
+			}(m, ctx)
+		case <-pingTicker.C:
+			go func(m *mqttClient, ctx context.Context) {
+				if err := m.pingTarget(ctx, address); err != nil {
+					log.Warnf("can't ping at ipv4 level: ", err)
+				}
+			}(m, ctx)
 		case msg, ok := <-m.phev.Recv:
 			if !ok {
-				log.Infof("Connection closed.")
-				updaterTicker.Stop()
-				return fmt.Errorf("Connection closed.")
+				pingTicker.Stop()
+				return fmt.Errorf("connection closed")
 			}
 			switch msg.Type {
 			case protocol.CmdInBadEncoding:
@@ -420,8 +559,7 @@ func (m *mqttClient) handlePhev(cmd *cobra.Command) error {
 				}
 				if encodingErrorCount > 5 {
 					m.phev.Close()
-					updaterTicker.Stop()
-					return fmt.Errorf("Disconnecting due to too many errors")
+					return fmt.Errorf("disconnecting due to too many errors")
 				}
 				encodingErrorCount += 1
 				lastEncodingError = time.Now()
@@ -829,8 +967,7 @@ func init() {
 	mqttCmd.Flags().String("mqtt_topic_prefix", "phev", "Prefix for MQTT topics")
 	mqttCmd.Flags().Bool("ha_discovery", true, "Enable Home Assistant MQTT discovery")
 	mqttCmd.Flags().String("ha_discovery_prefix", "homeassistant", "Prefix for Home Assistant MQTT discovery")
-	mqttCmd.Flags().Duration("update_interval", 5*time.Minute, "How often to request force updates")
-	mqttCmd.Flags().Duration("wifi_restart_time", 0, "Attempt to restart Wifi if no connection for this long")
-	mqttCmd.Flags().Duration("wifi_restart_retry_time", 2*time.Minute, "Interval to attempt Wifi restart")
-	mqttCmd.Flags().String("wifi_restart_command", defaultWifiRestartCmd, "Command to restart Wifi connection to Phev")
+	mqttCmd.Flags().Duration("update_interval", 5*time.Minute, "how often to request for updated PHEV state")
+	mqttCmd.Flags().Duration("ping_interval", 60*time.Second, "how often to ping the PHEV")
+	mqttCmd.Flags().String("interface", "", "The WiFi interface over which to connect")
 }

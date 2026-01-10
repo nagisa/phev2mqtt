@@ -14,7 +14,7 @@
                     src = ./.;
                     filter = p: t: cleanSourceFilter p t || p == "flake.nix" || p == "flake.lock";
                 };
-                vendorHash = "sha256-1Ci2ULhcAQzmXA6Ms1+l20rXRUa0lNxRW51hGfBPKKk=";
+                vendorHash = "sha256-cESihpbkM1vkzBRhEx4sJlWPwvqdj89qEHgILhgx6Zw=";
                 buildInputs = [ final.libpcap ];
                 meta = {
                     license = licenses.gpl3;
@@ -53,7 +53,6 @@
             config = let
                 cfg = config.services.phev2mqtt;
                 flags = [
-                    "--wifi_restart_command" "''"
                     "--address" "${cfg.phevAddress}:8080"
                     "--mqtt_server" cfg.mqttBroker
                 ] ++ cfg.flags;
@@ -66,35 +65,7 @@
                     wantedBy = lib.mkForce [];
                     bindsTo = [ "sys-subsystem-net-devices-${cfg.wirelessInterface}.device" ];
                     upheldBy = [ "sys-subsystem-net-devices-${cfg.wirelessInterface}.device" ];
-                    partOf = [ "ping-${cfg.wirelessInterface}.service" ];
                     serviceConfig.BindPaths = [ "/etc/wpa_supplicant_${cfg.wirelessInterface}.conf:/etc/wpa_supplicant.conf" ];
-                };
-
-                systemd.services."ping-${cfg.wirelessInterface}" = {
-                    # This service covers in particular a number of failure modes I've seen in
-                    # PHEV connection: first is that frequently DHCP server will not respond
-                    # after association, and second is that at some point the association gets
-                    # in a state where communication is no longer possible. PHEV appears to be
-                    # setting up a firewall or something based on the DHCP leases it gave out –
-                    # statically assigning IP addresses does *not* work.
-                    bindsTo = [ "wpa_supplicant-${cfg.wirelessInterface}.service" ];
-                    wantedBy = [ "wpa_supplicant-${cfg.wirelessInterface}.service" ];
-                    after = [ "wpa_supplicant-${cfg.wirelessInterface}.service" ];
-                    script = ''
-                        set -e
-                        ${pkgs.coreutils}/bin/sleep 30
-                        while true; do
-                            # This will exit with a failure code if there isn't a successful
-                            # response in `-w 60` seconds. It will send an ICMP ping every `-i
-                            # 5` second on the `wirelessInterface`.
-                            ${pkgs.iputils}/bin/ping ${cfg.phevAddress} -w 30 -c 1 -i 5 -I ${cfg.wirelessInterface} -q > /dev/null
-                            ${pkgs.coreutils}/bin/sleep 60
-                        done
-                    '';
-                    serviceConfig = {
-                        Restart = "always";
-                        RestartSec = 5;
-                    };
                 };
 
                 systemd.services.phev2mqtt = {
@@ -104,7 +75,7 @@
                     serviceConfig = {
                         Type = "exec";
                         ExecStart = utils.escapeSystemdExecArgs (
-                            [ "${pkgs.phev2mqtt}/bin/phev2mqtt"  "client" "mqtt" ] ++ flags
+                            [ "${pkgs.phev2mqtt}/bin/phev2mqtt"  "client" "mqtt" "--interface" cfg.wirelessInterface ] ++ flags
                         );
                         WatchdogSec = 1200;
                         Restart = "always";
@@ -114,7 +85,6 @@
                         LimitMEMLOCK = "0";
                         LockPersonality = "true";
                         PrivateDevices = "true";
-                        PrivateUsers = "yes";
                         ProtectClock = "true";
                         ProtectControlGroups = "true";
                         ProtectHome = "true";
@@ -122,12 +92,14 @@
                         ProtectKernelLogs = "true";
                         ProtectKernelModules = "true";
                         ProtectKernelTunables = "true";
-                        ProtectProc = "noaccess";
-                        RestrictAddressFamilies = "AF_INET AF_INET6 AF_UNIX";
+                        ProtectProc = "invisible";
+                        RestrictAddressFamilies = "AF_INET AF_UNIX AF_NETLINK";
                         RestrictNamespaces = "yes";
                         RestrictRealtime = "true";
                         SystemCallArchitectures = "native";
-                        SystemCallFilter = ["@system-service" "~@privileged"];
+                        CapabilityBoundingSet = "CAP_NET_RAW";
+                        AmbientCapabilities = "CAP_NET_RAW";
+                        SystemCallFilter = [ "@system-service" "@network-io" ];
                         UMask = 0077;
                     };
                 };
