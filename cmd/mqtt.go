@@ -613,18 +613,22 @@ func (m *mqttClient) handlePhev(cmd *cobra.Command) error {
 	defer m.setConnected(false)
 
 	// Wait for the interface to become available.
-	linkChanges := make(chan netlink.LinkUpdate)
-	netlinkOk := false
+	linkChanges := make(chan netlink.LinkUpdate, 1)
 	if err := netlink.LinkSubscribe(linkChanges, ctx.Done()); err != nil {
 		log.WithError(err).Error("could not subscribe to netlink link changes")
-		netlinkOk = false
+		linkChanges = nil
 	}
-	addrChanges := make(chan netlink.AddrUpdate)
+	addrChanges := make(chan netlink.AddrUpdate, 1)
 	if err := netlink.AddrSubscribe(addrChanges, ctx.Done()); err != nil {
 		log.WithError(err).Error("could not subscribe to netlink address changes")
-		netlinkOk = false
+		addrChanges = nil
 	}
-	if !m.evaluateLinkState() && netlinkOk {
+	if !m.evaluateLinkState() {
+		// Netlink notifications are the fast path. Keep polling as a fallback so
+		// a failed subscription cannot leave us either dialing without a link or
+		// waiting forever for an event that will never arrive.
+		linkPollTicker := time.NewTicker(5 * time.Second)
+		defer linkPollTicker.Stop()
 	loop:
 		for {
 			select {
@@ -633,6 +637,10 @@ func (m *mqttClient) handlePhev(cmd *cobra.Command) error {
 			case <-pingTicker.C:
 				if _, err := client.SdNotify(false, client.SdNotifyWatchdog); err != nil {
 					log.WithError(err).Warn("could not reset systemd watchdog")
+				}
+			case <-linkPollTicker.C:
+				if m.evaluateLinkState() {
+					break loop
 				}
 			case <-linkChanges:
 				if m.evaluateLinkState() {
