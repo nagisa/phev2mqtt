@@ -9,12 +9,9 @@ For further hacking, read the [protocol documentation](protocol/README.md).
 
 Tested against a MY18 vehicle.
 
-![Home Assistant Screenshot](phev-ha.png)
-
 ## Supported functionality
 
- * MQTT proxy to Phev
- * Home Assistant discovery
+ * MQTT proxy to Phev, as a [Homie 5](https://homieiot.github.io/) device
  * Register client to car
  * Fetch battery, charge, door, light status
  * Set lights and charge enable
@@ -88,64 +85,49 @@ messages such as charge and AC status.
 ### MQTT Gateway
 
 The primary feature of this code is to run as a proxy between the car and
-MQTT. Registers with car status are sent to MQTT, both as raw register
-values and decoded functional values. Commands sent on MQTT topics can
-be used to control certain aspects of the vehicle.
+MQTT. The car is published as the [Homie 5](https://homieiot.github.io/specification/) device
+`homie/5/phev`, and its settable properties control certain aspects of the vehicle.
 
 Start the MQTT gateway with:
 
 `./phev2mqtt client mqtt --mqtt_server tcp://<your_mqtt_address:1883/ [--mqtt_username <mqtt_username>] [--mqtt_password <mqtt_password>]`
 
-The following topics are published:
+The device's `$state` is *ready* while the car is connected, *disconnected* otherwise, and *lost*
+when phev2mqtt is gone. Its properties are below, relative to `homie/5/phev/`. Booleans are
+*true* or *false*. Set a settable property by publishing to its topic followed by `/set`. Sets are
+ignored, and logged, while the car isn't connected.
 
-| Topic/prefix | Description |
-|---|---|
-| phev/register/[register] | Raw values of each register, as hex strings |
-| phev/available | Wifi connection status to car. *online* or *offline* |
-| phev/battery/level | Current drive battery level as a percent |
-| phev/climate/status | Whether the car AC is on |
-| phev/climate/mode | Mode of the AC, if on. *cool*, *heat*, *windscreen* |
-| phev/climate/[mode] | Alternative of above. Modes are *cool*, *heat*, *windscreen* which can be *off* or *on* |
-| phev/charge/charging | Whether the battery is charging. *on* or *off* |
-| phev/charge/plug | If the charging plug is *unplugged* or *connected*. |
-| phev/charge/remaining | Minutes left, if charging. |
-| phev/door/locked | Whether the car is locked. *on* or *off* |
-| ~~phev/door/front_left~~ | State of doors. *closed* or *open* |
-| ~~phev/door/front_right~~ | State of doors. *closed* or *open* |
-| phev/door/front_passenger | State of doors. *closed* or *open* |
-| phev/door/driver | State of doors. *closed* or *open* |
-| phev/door/rear_left | State of doors. *closed* or *open* |
-| phev/door/rear_right | State of doors. *closed* or *open* |
-| phev/door/bonnet | State of doors. *closed* or *open* |
-| phev/door/boot | State of doors. *closed* or *open* |
-| phev/lights/parking | Parking lights. *on* or *off* |
-| phev/lights/head | Head lights. *on* or *off* |
-| phev/lights/hazard | Hazard lights. *on* or *off* |
-| phev/lights/interior | Interior lights. *on* or *off* |
-| phev/vin | Discovered VIN of the car |
-| phev/registrations | Number of wifi clients registered to the car |
+| Property | Type | Settable | Description |
+|---|---|---|---|
+| battery/level | integer, % | | Current drive battery level |
+| charge/charging | boolean | | Whether the battery is charging |
+| charge/remaining | integer, min | | Minutes left, if charging |
+| charge/plug | boolean | | Whether the charging plug is connected |
+| charge/cancel-timer | enum *cancel* | yes, not retained | Cancel the charge timer |
+| doors/locked | boolean | | Whether the car is locked |
+| doors/driver | boolean | | Whether the door is open |
+| doors/front-passenger | boolean | | Whether the door is open |
+| doors/rear-left | boolean | | Whether the door is open |
+| doors/rear-right | boolean | | Whether the door is open |
+| doors/bonnet | boolean | | Whether the bonnet is open |
+| doors/boot | boolean | | Whether the boot is open |
+| lights/head | boolean | yes | Head lights |
+| lights/parking | boolean | yes | Parking lights |
+| lights/interior | boolean | | Interior lights |
+| lights/hazard | boolean | | Hazard lights |
+| climate/state | enum *off*, *heat*, *cool*, *windscreen*, *terminated* | | AC/climate state |
+| climate/command | JSON | yes, not retained | Turn the climate on or off, e.g. `{"mode":"heat","duration":20}`. `mode` is *off*, *heat*, *cool* or *windscreen*; `duration` is 10, 20 or 30 minutes, 10 by default. *off* while terminated clears the termination |
+| car/vin | string | | VIN of the car |
+| car/ecu-version | string | | ECU version |
+| car/registrations | integer | | Number of wifi clients registered to the car |
+| connection/state | enum *offline*, *waiting-for-ip*, *connecting*, *online* | | Wifi connection status to the car |
+| connection/command | enum *off*, *on*, *restart* | yes, not retained | Change the car connection state |
 
-The following topics are subscribed to and can be used to change state on the car:
+Raw register values are logged at the debug level, with the register and the data as fields.
 
-| Topic/prefix | Description |
-|---|---|
-| phev/set/register/[register] | Set register 0x[register] to value 0x[payload] |
-| phev/set/parkinglights | Set parking lights *on* or *off* |
-| phev/set/headlights | Set head lights *on* or *off* |
-| phev/set/cancelchargetimer | Cancel charge timer (any payload) |
-| phev/set/climate/[mode] | Set ac/climate state (cool/heat/windscreen/off) for [payload] (10[on]/20/30) |
-| phev/set/climate/state | `[payload]=reset` clears "terminated" state |
-| phev/connection | Change car connection state to (on/off/restart) |
-
-#### Home Assistant discovery
-
-The client supports [Home Assistant MQTT Discovery](https://www.home-assistant.io/docs/mqtt/discovery/) by default.
-
-After initial discovery, re-run the binary for the entities to appear. You can
-search for "phev" in your entity list. Your car should also appear as a device
-in the Devices tab.
-
-You can disable this with `--ha_discovery=false` or change the discovery prefix, the default is `--ha_discovery_prefix=homeassistant`.
+Under systemd, the logs go to the journal natively, with their priorities and with their fields as
+`F_<FIELD>` journal fields. Plain `journalctl -u phev2mqtt` shows only the messages; use `-o verbose`
+or `-o json` for the fields.
 
 #### Raspbian setup with auto-start
 

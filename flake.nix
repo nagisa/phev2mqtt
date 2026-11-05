@@ -14,7 +14,7 @@
                     src = ./.;
                     filter = p: t: cleanSourceFilter p t || p == "flake.nix" || p == "flake.lock";
                 };
-                vendorHash = "sha256-Uk3ZrStqJCqWpdxA1z0pNoS6TNdgx1Q3loilJwGgkrY=";
+                vendorHash = "sha256-EtABe/uXEU8zfNGPyzYRgKKyVlvQrKAEYdpy8AjrseI=";
                 buildInputs = [ final.libpcap ];
                 meta = {
                     license = licenses.gpl3;

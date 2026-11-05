@@ -3,6 +3,7 @@ module github.com/buxtronix/phev2mqtt
 go 1.23.0
 
 require (
+	github.com/coreos/go-systemd/v22 v22.5.0
 	github.com/eclipse/paho.mqtt.golang v1.3.5
 	github.com/google/gopacket v1.1.19
 	github.com/sirupsen/logrus v1.8.1
@@ -37,7 +38,6 @@ require (
 	github.com/client9/misspell v0.3.4 // indirect
 	github.com/cncf/udpa/go v0.0.0-20201120205902-5459f2c99403 // indirect
 	github.com/coreos/go-semver v0.3.0 // indirect
-	github.com/coreos/go-systemd/v22 v22.3.2 // indirect
 	github.com/cpuguy83/go-md2man/v2 v2.0.0 // indirect
 	github.com/creack/pty v1.1.9 // indirect
 	github.com/d4l3k/messagediff v1.2.1 // indirect
