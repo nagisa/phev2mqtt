@@ -722,12 +722,14 @@ func (m *mqttClient) handlePhev(cmd *cobra.Command) error {
 					break
 				}
 				m.publishRegister(msg)
-				phev.Send <- &protocol.PhevMessage{
+				if err := phev.SendMessage(ctx, &protocol.PhevMessage{
 					Type:     protocol.CmdOutSend,
 					Register: msg.Register,
 					Ack:      protocol.Ack,
 					Xor:      msg.Xor,
 					Data:     []byte{0x0},
+				}); err != nil {
+					return fmt.Errorf("acknowledging register %02x: %w", msg.Register, err)
 				}
 			}
 		}

@@ -3,13 +3,13 @@
 package client
 
 import (
+	"context"
 	"encoding/hex"
 	"fmt"
 	log "github.com/sirupsen/logrus"
 	"net"
 	"sync"
 	"time"
-	"context"
 
 	"github.com/buxtronix/phev2mqtt/protocol"
 )
@@ -60,18 +60,21 @@ type Client struct {
 
 	listeners []*Listener
 	lMu       sync.Mutex
+	registers chan struct{}
 
-	address string
-	conn    net.Conn
-	lastRx  time.Time
-	started chan struct{}
+	address  string
+	conn     net.Conn
+	connMu   sync.Mutex
+	lastRx   time.Time
+	started  chan struct{}
+	done     chan struct{}
+	close    sync.Once
+	closeErr error
 
 	key *protocol.SecurityKey
 
 	// Keep track of the model year so we can use the correct registers
 	ModelYear ModelYear
-
-	closed bool
 }
 
 // An Option configures the client.
@@ -91,6 +94,8 @@ func New(opts ...Option) (*Client, error) {
 		Send:      make(chan *protocol.PhevMessage, 5),
 		Settings:  &protocol.Settings{},
 		started:   make(chan struct{}, 2),
+		done:      make(chan struct{}),
+		registers: make(chan struct{}, 1),
 		listeners: []*Listener{},
 		address:   DefaultAddress,
 		key:       &protocol.SecurityKey{},
@@ -126,29 +131,68 @@ func (c *Client) RemoveListener(l *Listener) {
 
 // Close closes the client.
 func (c *Client) Close() error {
-	c.closed = true
-	if c.conn == nil {
-		return nil
+	c.shutdown()
+	return c.closeErr
+}
+
+// shutdown marks the client closed and interrupts any goroutines waiting on
+// the connection. The Send channel stays open so concurrent senders cannot
+// panic while the connection is being torn down.
+func (c *Client) shutdown() {
+	c.close.Do(func() {
+		close(c.done)
+		c.connMu.Lock()
+		defer c.connMu.Unlock()
+		if c.conn != nil {
+			c.closeErr = c.conn.Close()
+		}
+	})
+}
+
+// SendMessage queues a message unless the connection or context has ended.
+func (c *Client) SendMessage(ctx context.Context, msg *protocol.PhevMessage) error {
+	select {
+	case <-c.done:
+		return fmt.Errorf("connection is closed")
+	default:
 	}
-	return c.conn.Close()
+	select {
+	case c.Send <- msg:
+		return nil
+	case <-c.done:
+		return fmt.Errorf("connection is closed")
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // Connect connects to the Phev.
 func (c *Client) Connect(ctx context.Context) error {
-    SdNotify(false, SdNotifyWatchdog);
-    interval, _ := SdWatchdogInterval(5000 * time.Millisecond)
-	dialctx, _ := context.WithTimeout(ctx, interval);
+	SdNotify(false, SdNotifyWatchdog)
+	interval, _ := SdWatchdogInterval(5000 * time.Millisecond)
+	dialctx, _ := context.WithTimeout(ctx, interval)
 	dialer := &net.Dialer{}
 	conn, err := dialer.DialContext(dialctx, "tcp", c.address)
 	if err != nil {
 		return err
 	}
 	log.Info("%PHEV_TCP_CONNECTED%")
-	c.closed = false
+	c.connMu.Lock()
+	select {
+	case <-c.done:
+		c.connMu.Unlock()
+		conn.Close()
+		return fmt.Errorf("connection was closed while dialing")
+	default:
+	}
 	c.conn = conn
+	c.connMu.Unlock()
 	go func() {
-		<-ctx.Done()
-		c.Close()
+		select {
+		case <-ctx.Done():
+			c.Close()
+		case <-c.done:
+		}
 	}()
 	go c.reader()
 	go c.writer()
@@ -161,7 +205,7 @@ var startTimeout = 20 * time.Second
 // Start waits for the client to start.
 func (c *Client) Start(ctx context.Context) error {
 	log.Debug("%%PHEV_START_AWAIT%%")
-	timeoutCtx, _ := context.WithTimeout(ctx, startTimeout);
+	timeoutCtx, _ := context.WithTimeout(ctx, startTimeout)
 	for {
 		select {
 		case _, ok := <-c.started:
@@ -182,34 +226,50 @@ func (c *Client) Start(ctx context.Context) error {
 
 // SetRegister sets a register on the car.
 func (c *Client) SetRegister(ctx context.Context, register byte, value []byte) error {
-	setRegister := func(xor byte) {
-		c.Send <- &protocol.PhevMessage{
+	timeoutCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	// Register responses have no transaction ID, so keep only one request in flight.
+	select {
+	case c.registers <- struct{}{}:
+		defer func() { <-c.registers }()
+	case <-timeoutCtx.Done():
+		if ctx.Err() != nil {
+			return fmt.Errorf("cancelled setting of register %02x", register)
+		}
+		return fmt.Errorf("timed out attempting to set register %02x", register)
+	case <-c.done:
+		return fmt.Errorf("connection is closed")
+	}
+
+	setRegister := func(xor byte) error {
+		return c.SendMessage(timeoutCtx, &protocol.PhevMessage{
 			Type:     protocol.CmdOutSend,
 			Ack:      protocol.Request,
 			Register: register,
 			Data:     value,
 			Xor:      xor,
-		}
+		})
 	}
 	xor := byte(0)
-	timeoutCtx, _ := context.WithTimeout(ctx, 10 * time.Second);
 	l := c.AddListener()
 	defer c.RemoveListener(l)
 SETREG:
-	setRegister(xor)
+	if err := setRegister(xor); err != nil {
+		return fmt.Errorf("sending register %02x: %w", register, err)
+	}
 	for {
 		select {
-		case <-ctx.Done():
-			return fmt.Errorf("cancelled setting of register %02x", register)
 		case <-timeoutCtx.Done():
+			if ctx.Err() != nil {
+				return fmt.Errorf("cancelled setting of register %02x", register)
+			}
 			return fmt.Errorf("timed out attempting to set register %02x", register)
+		case <-c.done:
+			return fmt.Errorf("connection is closed")
 		case msg, ok := <-l.C:
 			if !ok {
 				return fmt.Errorf("listener channel closed")
 			}
-			// FIXME: this should not be a part of SetRegister, but rather a part of
-			// sender/receiver as this is where it the multiple concurrent SetRegister operations
-			// get serialized.
 			if msg.Type == protocol.CmdInBadEncoding {
 				xor = msg.Data[0]
 				goto SETREG
@@ -240,7 +300,6 @@ func (c *Client) nextRecvMsg(deadline time.Time) (*protocol.PhevMessage, error) 
 func (c *Client) manage() {
 	ml := c.AddListener()
 	defer close(c.started)
-	defer close(c.Send)
 	for m := range ml.C {
 		switch m.Type {
 		case protocol.CmdInResp:
@@ -248,26 +307,32 @@ func (c *Client) manage() {
 				c.Settings.FromRegister(m.Data)
 			}
 		case protocol.CmdInStartResp:
-			c.Send <- protocol.NewPingRequestMessage(0xa)
+			if err := c.SendMessage(context.Background(), protocol.NewPingRequestMessage(0xa)); err != nil {
+				return
+			}
 		case protocol.CmdInMy18StartReq:
 			c.ModelYear = ModelYear18
-			c.Send <- &protocol.PhevMessage{
+			if err := c.SendMessage(context.Background(), &protocol.PhevMessage{
 				Type:     protocol.CmdOutMy18StartResp,
 				Register: 0x1,
 				Ack:      protocol.Ack,
 				Xor:      m.Xor,
 				Data:     []byte{0x0},
+			}); err != nil {
+				return
 			}
 			log.Debug("%%PHEV_START18_RECV%%")
 			c.started <- struct{}{}
 		case protocol.CmdInMy14StartReq:
 			c.ModelYear = ModelYear14
-			c.Send <- &protocol.PhevMessage{
+			if err := c.SendMessage(context.Background(), &protocol.PhevMessage{
 				Type:     protocol.CmdOutMy14StartResp,
 				Register: 0x1,
 				Ack:      protocol.Ack,
 				Xor:      m.Xor,
 				Data:     []byte{0x0},
+			}); err != nil {
+				return
 			}
 			log.Debug("%%PHEV_START14_RECV%%")
 			c.started <- struct{}{}
@@ -282,7 +347,9 @@ func (c *Client) reader() {
 		data := make([]byte, 4096)
 		n, err := c.conn.Read(data)
 		if err != nil {
-			if !c.closed {
+			select {
+			case <-c.done:
+			default:
 				log.Debug("%%PHEV_TCP_READER_ERROR%%: ", err)
 			}
 			break
@@ -304,7 +371,7 @@ func (c *Client) reader() {
 		}
 	}
 	log.Debug("%PHEV_TCP_READER_CLOSE%")
-	c.conn.Close()
+	c.shutdown()
 	close(c.Recv)
 	c.lMu.Lock()
 	for _, l := range c.listeners {
@@ -315,8 +382,11 @@ func (c *Client) reader() {
 }
 
 func (c *Client) writer() {
-	loop: for {
+loop:
+	for {
 		select {
+		case <-c.done:
+			break loop
 		case msg, ok := <-c.Send:
 			if !ok {
 				break loop
@@ -327,7 +397,9 @@ func (c *Client) writer() {
 			log.Tracef("%%PHEV_TCP_SEND_DATA%%: %s", hex.EncodeToString(data))
 			c.conn.(*net.TCPConn).SetWriteDeadline(time.Now().Add(15 * time.Second))
 			if _, err := c.conn.Write(data); err != nil {
-				if !c.closed {
+				select {
+				case <-c.done:
+				default:
 					log.Errorf("%%PHEV_TCP_WRITER_ERROR%%: %v", err)
 				}
 				break loop
@@ -335,7 +407,6 @@ func (c *Client) writer() {
 		}
 	}
 	log.Debug("%PHEV_TCP_WRITER_CLOSE%")
-	c.closed = true
-	c.conn.Close()
+	c.shutdown()
 	return
 }
