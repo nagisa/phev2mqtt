@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	log "github.com/sirupsen/logrus"
+	"strings"
 	"time"
 )
 
@@ -67,60 +68,70 @@ type PhevMessage struct {
 }
 
 // LogFields returns the fields describing the message in a log event.
+//
+// `type` names the kind of message, `register` and `payload` carry what it addresses and
+// holds, and `value` is the decoded register, if there is one.
 func (p *PhevMessage) LogFields() log.Fields {
-	return log.Fields{
-		"xor":     fmt.Sprintf("%02x", p.Xor),
-		"message": p.ShortForm(),
+	fields := log.Fields{
+		"type": p.logType(),
+		"xor":  fmt.Sprintf("%02x", p.Xor),
 	}
+	switch p.Type {
+	case CmdInPingResp, CmdOutPingReq:
+		fields["id"] = fmt.Sprintf("%x", p.Register)
+	case CmdOutSend, CmdInResp:
+		fields["register"] = fmt.Sprintf("%02x", p.Register)
+		fields["payload"] = hex.EncodeToString(p.Data)
+		if p.Reg != nil {
+			fields["value"] = p.Reg.String()
+		}
+	case CmdInBadEncoding:
+		if len(p.Data) > 0 {
+			fields["expected"] = fmt.Sprintf("%02x", p.Data[0])
+		}
+	default:
+		fields["register"] = fmt.Sprintf("%02x", p.Register)
+		fields["payload"] = hex.EncodeToString(p.Data)
+		// Only messages that were decoded have this; the ones we build ourselves do not.
+		if len(p.Original) > 0 {
+			fields["original"] = hex.EncodeToString(p.Original)
+		}
+	}
+	return fields
 }
 
-func (p *PhevMessage) ShortForm() string {
+func (p *PhevMessage) logType() string {
 	switch p.Type {
 	case CmdInPingResp:
-		return fmt.Sprintf("PING RESP     (id %x)", p.Register)
-
+		return "ping-response"
 	case CmdOutPingReq:
-		return fmt.Sprintf("PING REQ      (id %x)", p.Register)
-
-	case CmdOutStartSendMy18:
-		return fmt.Sprintf("START SEND18  (orig  %s)", hex.EncodeToString(p.Original))
-
-	case CmdInStartResp:
-		return fmt.Sprintf("START RESP    (orig: %s)", hex.EncodeToString(p.Original))
-
+		return "ping-request"
 	case CmdOutSend:
 		if p.Ack == Ack {
-			return fmt.Sprintf("REGISTER ACK  (reg 0x%02x data %s)", p.Register, hex.EncodeToString(p.Data))
+			return "register-ack"
 		}
-		return fmt.Sprintf("REGISTER SET  (reg 0x%02x data %s)", p.Register, hex.EncodeToString(p.Data))
-
+		return "register-set"
 	case CmdInResp:
 		if p.Ack == Request {
-			if p.Reg != nil {
-				return fmt.Sprintf("REGISTER NTFY (reg 0x%02x data %s) [%s]", p.Register, hex.EncodeToString(p.Data), p.Reg.String())
-			} else {
-				return fmt.Sprintf("REGISTER NTFY (reg 0x%02x data %s)", p.Register, hex.EncodeToString(p.Data))
-			}
+			return "register-notify"
 		}
-		return fmt.Sprintf("REGISTER SETACK (reg 0x%02x data %s)", p.Register, hex.EncodeToString(p.Data))
-
+		return "register-set-ack"
+	case CmdOutStartSendMy18:
+		return "start-send"
+	case CmdInStartResp:
+		return "start-response"
 	case CmdInMy18StartReq:
-		return fmt.Sprintf("START RECV18  (orig %s)", hex.EncodeToString(p.Original))
-
+		return "start-request-my18"
 	case CmdOutMy18StartResp:
-		return fmt.Sprintf("START SEND18  (orig %s)", hex.EncodeToString(p.Original))
-
+		return "start-response-my18"
 	case CmdInMy14StartReq:
-		return fmt.Sprintf("START RECV14  (orig %s)", hex.EncodeToString(p.Original))
-
+		return "start-request-my14"
 	case CmdOutMy14StartResp:
-		return fmt.Sprintf("START SEND14  (orig %s)", hex.EncodeToString(p.Original))
-
+		return "start-response-my14"
 	case CmdInBadEncoding:
-		return fmt.Sprintf("BAD ENCODING  (exp: 0x%02x)", p.Data[0])
-
+		return "bad-encoding"
 	default:
-		return p.String()
+		return fmt.Sprintf("unknown-%02x", p.Type)
 	}
 }
 
@@ -892,7 +903,8 @@ func (r *RegisterWIFISSID) Decode(m *PhevMessage) {
 			dat[i] = 0x0
 		}
 	}
-	r.SSID = string(dat)
+	// The SSID is padded up to the field length.
+	r.SSID = strings.TrimRight(string(dat), "\x00")
 }
 
 func (r *RegisterWIFISSID) Encode() *PhevMessage {

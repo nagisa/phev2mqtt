@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/coreos/go-systemd/v22/journal"
 	log "github.com/sirupsen/logrus"
@@ -30,7 +32,7 @@ func (journalHook) Levels() []log.Level {
 func (journalHook) Fire(e *log.Entry) error {
 	vars := make(map[string]string, len(e.Data)+3)
 	for k, v := range e.Data {
-		vars["F_"+journalFieldName(k)] = fmt.Sprint(v)
+		vars["F_"+journalFieldName(k)] = journalFieldValue(fmt.Sprint(v))
 	}
 	if e.Caller != nil {
 		vars["CODE_FILE"] = e.Caller.File
@@ -38,6 +40,15 @@ func (journalHook) Fire(e *log.Entry) error {
 		vars["CODE_FUNC"] = e.Caller.Function
 	}
 	return journal.Send(e.Message, journalPriorities[e.Level], vars)
+}
+
+// journalFieldValue escapes values that are not printable text. Otherwise journald stores them
+// as binary data, which readers then show as an array of bytes.
+func journalFieldValue(value string) string {
+	if utf8.ValidString(value) && !strings.ContainsFunc(value, func(r rune) bool { return !unicode.IsPrint(r) }) {
+		return value
+	}
+	return strconv.Quote(value)
 }
 
 // journalFieldName makes a logrus field name a valid journal field name: uppercase letters,
