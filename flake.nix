@@ -43,6 +43,14 @@
                     description = "Address of the MQTT broker";
                     type = types.str;
                 };
+                wifiRestartThreshold = mkOption {
+                    description = ''
+                        Restart the wireless interface once this many attempts in a row to connect to the PHEV have
+                        failed while the link was up. 0 disables it, and also withholds CAP_NET_ADMIN from the service.
+                    '';
+                    type = types.ints.unsigned;
+                    default = 5;
+                };
                 flags = mkOption {
                     description = "Additional flags to pass to the service";
                     type = types.listOf types.str;
@@ -54,8 +62,10 @@
                 cfg = config.services.phev2mqtt;
                 flags = [
                     "--address" "${cfg.phevAddress}:8080"
-                    "--mqtt_server" cfg.mqttBroker
+                    "--mqtt-server" cfg.mqttBroker
+                    "--wifi-restart-threshold" (toString cfg.wifiRestartThreshold)
                 ] ++ cfg.flags;
+                capabilities = [ "CAP_NET_RAW" ] ++ optional (cfg.wifiRestartThreshold > 0) "CAP_NET_ADMIN";
             in mkIf cfg.enable {
                 nixpkgs.overlays = [ overlay ];
                 networking.wireless.interfaces = [ cfg.wirelessInterface ];
@@ -97,8 +107,8 @@
                         RestrictNamespaces = "yes";
                         RestrictRealtime = "true";
                         SystemCallArchitectures = "native";
-                        CapabilityBoundingSet = "CAP_NET_RAW";
-                        AmbientCapabilities = "CAP_NET_RAW";
+                        CapabilityBoundingSet = capabilities;
+                        AmbientCapabilities = capabilities;
                         SystemCallFilter = [ "@system-service" "@network-io" ];
                         UMask = 0077;
                     };

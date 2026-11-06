@@ -36,7 +36,7 @@ func (c *Car) Begin() error {
 		for {
 			conn, err := l.Accept()
 			if err != nil {
-				log.Errorf("Accept() error: %v")
+				log.WithError(err).Error("could not accept a connection, no longer listening")
 				return
 			}
 			svc := NewConnection(conn, c)
@@ -45,7 +45,7 @@ func (c *Car) Begin() error {
 			go svc.Start()
 		}
 	}()
-	log.Debugf("%%PHEV_EMULATOR_START%% Started PHEV emulator, address=%s", c.address)
+	log.WithField("address", c.address).Info("emulator is listening")
 	return nil
 }
 

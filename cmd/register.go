@@ -83,7 +83,7 @@ func runRegister(cmd *cobra.Command, args []string) {
 			select {
 			case msg, ok := <-cl.Recv:
 				if !ok {
-					log.Errorf("Connection closed.")
+					log.Error("connection closed")
 					close(vinCh)
 					return
 				}
@@ -109,7 +109,7 @@ func runRegister(cmd *cobra.Command, args []string) {
 
 	vin, ok := <-vinCh
 	if !ok {
-		log.Errorf("Client closed before recieving VIN")
+		log.Error("connection closed before receiving the VIN")
 		return
 	}
 
@@ -121,7 +121,7 @@ func runRegister(cmd *cobra.Command, args []string) {
 		fmt.Printf("Attempting to register to car (VIN: %s)...\n", vin)
 	}
 	if err := cl.SetRegister(context.Background(), reg, []byte{0x1}); err != nil {
-		log.Errorf("Failed to (un)register: %v", err)
+		log.WithError(err).WithFields(log.Fields{"vin": vin, "register": fmt.Sprintf("%02x", reg)}).Error("could not (un)register")
 		return
 	}
 	cl.Close()
@@ -142,6 +142,6 @@ func init() {
 	// Cobra supports local flags which will only run when this command
 	// is called directly, e.g.:
 	// registerCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
-	registerCmd.Flags().Duration("wait_duration", 10*time.Second, "How long to wait after connecting to car before sending registration command")
-	unRegisterCmd.Flags().Duration("wait_duration", 10*time.Second, "How long to wait after connecting to car before sending registration command")
+	registerCmd.Flags().Duration("wait-duration", 10*time.Second, "How long to wait after connecting to car before sending registration command")
+	unRegisterCmd.Flags().Duration("wait-duration", 10*time.Second, "How long to wait after connecting to car before sending registration command")
 }

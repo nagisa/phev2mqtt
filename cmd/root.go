@@ -20,10 +20,12 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/coreos/go-systemd/v22/journal"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 )
 
 var (
@@ -67,6 +69,10 @@ var rootCmd = &cobra.Command{
 // This is called by main.main(). It only needs to happen once to the rootCmd.
 func Execute() {
 	toJournal, _ = journal.StderrIsJournalStream()
+	// Also accept the underscore spelling of flags.
+	rootCmd.SetGlobalNormalizationFunc(func(_ *pflag.FlagSet, name string) pflag.NormalizedName {
+		return pflag.NormalizedName(strings.ReplaceAll(name, "_", "-"))
+	})
 	if err := rootCmd.Execute(); err != nil {
 		if toJournal {
 			// journald stores this line at error priority because of the `<3>`.
@@ -80,5 +86,5 @@ func Execute() {
 
 func init() {
 	rootCmd.PersistentFlags().StringVarP(&logLevel, "verbosity", "v", "info", "logging level to use")
-	rootCmd.PersistentFlags().BoolVarP(&logTimes, "log_timestamps", "t", false, "logging with timestamps")
+	rootCmd.PersistentFlags().BoolVarP(&logTimes, "log-timestamps", "t", false, "logging with timestamps")
 }

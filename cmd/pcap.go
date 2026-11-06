@@ -54,13 +54,13 @@ via Android (https://wladimir-tm4pda.github.io/porting/tcpdump.html)
 		if parts := strings.Split(args[0], ":"); len(parts) == 3 && parts[0] == "tcp" {
 			conn, err := net.Dial("tcp", fmt.Sprintf("%s:%s", parts[1], parts[2]))
 			if err != nil {
-				log.Fatal(err)
+				log.WithError(err).Fatal("could not connect")
 			}
 			if tcpconn, ok := conn.(*net.TCPConn); ok {
 				if tc, err := tcpconn.File(); err == nil {
 					handle, err = pcap.OpenOfflineFile(tc)
 					if err != nil {
-						log.Fatal(err)
+						log.WithError(err).Fatal("could not open the capture stream")
 					}
 				}
 			}
@@ -68,7 +68,7 @@ via Android (https://wladimir-tm4pda.github.io/porting/tcpdump.html)
 			handle, err = pcap.OpenOffline(args[0])
 		}
 		if err != nil {
-			log.Fatal(err)
+			log.WithError(err).Fatal("could not open the capture")
 		}
 		defer handle.Close()
 		securityKey = &protocol.SecurityKey{}
@@ -105,13 +105,13 @@ func decodePacket(cmd *cobra.Command, packet gopacket.Packet) {
 			dir = "out "
 		}
 		if tcp.SYN && tcp.ACK {
-			log.Infof("TCP-SYN-ACK\n")
+			log.WithField("direction", strings.TrimSpace(dir)).Info("tcp SYN-ACK")
 		}
 		if tcp.FIN {
-			log.Infof("TCP-FIN\n")
+			log.WithField("direction", strings.TrimSpace(dir)).Info("tcp FIN")
 		}
 		if tcp.RST {
-			log.Infof("TCP-RST\n")
+			log.WithField("direction", strings.TrimSpace(dir)).Info("tcp RST")
 		}
 	}
 
@@ -129,12 +129,12 @@ func decodePacket(cmd *cobra.Command, packet gopacket.Packet) {
 	}
 
 	if err := packet.ErrorLayer(); err != nil {
-		log.Errorf("error decoding packet:", err)
+		log.WithError(err.Error()).Error("could not decode a packet")
 	}
 }
 
 func processPayload(cmd *cobra.Command, data []byte, dir string) {
-	log.Tracef("%%PHEV_PCAP_RAW_%s%%: %s\n", strings.ToUpper(dir), hex.EncodeToString(data))
+	log.WithFields(log.Fields{"direction": strings.TrimSpace(dir), "data": hex.EncodeToString(data)}).Trace("received a payload")
 	msgs := protocol.NewFromBytes(data, securityKey)
 	for _, msg := range msgs {
 		if r, _ := cmd.Flags().GetBool("registers"); r {
@@ -144,7 +144,7 @@ func processPayload(cmd *cobra.Command, data []byte, dir string) {
 		if !pings && (msg.Type == protocol.CmdOutPingReq || msg.Type == protocol.CmdInPingResp) {
 			return
 		}
-		log.Infof("%s [%02x] %s", dir, msg.Xor, msg.ShortForm())
+		log.WithFields(msg.LogFields()).WithField("direction", strings.TrimSpace(dir)).Info("decoded a message")
 	}
 }
 
@@ -156,11 +156,15 @@ func handleRegisters(m *protocol.PhevMessage) {
 	if m.Type == protocol.CmdInResp {
 		data := hex.EncodeToString(m.Data)
 		if d := regs[m.Register]; d != data {
+			logger := log.WithFields(log.Fields{
+				"register": fmt.Sprintf("%02x", m.Register),
+				"old":      d,
+				"new":      data,
+			})
 			if m.Reg != nil {
-				log.Infof("UPDATEREG 0x%02x: %s -> %s (%s)\n", m.Register, d, data, m.Reg.String())
-			} else {
-				log.Infof("UPDATEREG 0x%02x: %s -> %s\n", m.Register, d, data)
+				logger = logger.WithField("decoded", m.Reg.String())
 			}
+			logger.Info("register changed")
 			regs[m.Register] = data
 		}
 	}

@@ -17,9 +17,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 package cmd
 
 import (
-	"encoding/hex"
-	"time"
 	"context"
+	"encoding/hex"
+	"fmt"
+	"time"
 
 	"github.com/buxtronix/phev2mqtt/client"
 	"github.com/buxtronix/phev2mqtt/protocol"
@@ -57,18 +58,23 @@ func Run(cmd *cobra.Command, args []string) {
 		select {
 		case m, ok := <-cl.Recv:
 			if !ok {
-				log.Infof("Connection closed.")
+				log.Info("connection closed")
 				return
 			}
 			switch m.Type {
 			case protocol.CmdInResp:
 				dataStr := hex.EncodeToString(m.Data)
 				if data := registers[m.Register]; data != dataStr {
-					log.Infof("%%PHEV_REG_UPDATE%% %02x: %s -> %s", m.Register, data, dataStr)
+					logger := log.WithFields(log.Fields{
+						"register": fmt.Sprintf("%02x", m.Register),
+						"old":      data,
+						"new":      dataStr,
+					})
 					registers[m.Register] = dataStr
 					if _, ok := m.Reg.(*protocol.RegisterGeneric); !ok {
-						log.Infof("%%PHEV_REG_UPDATE%% %02x: [%s]", m.Register, m.Reg.String())
+						logger = logger.WithField("decoded", m.Reg.String())
 					}
+					logger.Info("register changed")
 				}
 				cl.Send <- &protocol.PhevMessage{
 					Type:     protocol.CmdOutSend,

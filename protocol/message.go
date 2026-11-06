@@ -66,6 +66,14 @@ type PhevMessage struct {
 	Reg           Register
 }
 
+// LogFields returns the fields describing the message in a log event.
+func (p *PhevMessage) LogFields() log.Fields {
+	return log.Fields{
+		"xor":     fmt.Sprintf("%02x", p.Xor),
+		"message": p.ShortForm(),
+	}
+}
+
 func (p *PhevMessage) ShortForm() string {
 	switch p.Type {
 	case CmdInPingResp:
@@ -218,7 +226,7 @@ func (p *PhevMessage) String() string {
 func NewFromBytes(data []byte, key *SecurityKey) []*PhevMessage {
 	msgs := []*PhevMessage{}
 
-	log.Tracef("%%PHEV_DECODE_FROM_BYTES%%: Raw: %s", hex.EncodeToString(data))
+	log.WithField("data", hex.EncodeToString(data)).Trace("decoding bytes")
 	offset := 0
 	for {
 		dat, xor, rem := ValidateAndDecodeMessage(data[offset:])
@@ -229,7 +237,7 @@ func NewFromBytes(data []byte, key *SecurityKey) []*PhevMessage {
 			}
 			continue
 		}
-		log.Tracef("%%PHEV_DECODED_FROM_BYTES%%: Raw: %s", hex.EncodeToString(dat))
+		log.WithField("data", hex.EncodeToString(dat)).Trace("found a message")
 		dat = XorMessageWith(dat, xor)
 		p := &PhevMessage{}
 		err := p.DecodeFromBytes(dat, key)

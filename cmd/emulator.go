@@ -58,10 +58,10 @@ func (e *emu) topic(topic string) string {
 
 func (e *emu) Run(cmd *cobra.Command, args []string) error {
 
-	mqttServer, _ := cmd.Flags().GetString("mqtt_server")
-	mqttUsername, _ := cmd.Flags().GetString("mqtt_username")
-	mqttPassword, _ := cmd.Flags().GetString("mqtt_password")
-	e.prefix, _ = cmd.Flags().GetString("mqtt_topic_prefix")
+	mqttServer, _ := cmd.Flags().GetString("mqtt-server")
+	mqttUsername, _ := cmd.Flags().GetString("mqtt-username")
+	mqttPassword, _ := cmd.Flags().GetString("mqtt-password")
+	e.prefix, _ = cmd.Flags().GetString("mqtt-topic-prefix")
 
 	if mqttServer != "" {
 		e.options = mqtt.NewClientOptions().
@@ -99,25 +99,26 @@ func (e *emu) publish(topic, payload string) {
 
 func (e *emu) handleIncomingMqtt(client mqtt.Client, msg mqtt.Message) {
 	topicParts := strings.Split(msg.Topic(), "/")
-	log.Infof("Topic got=%s want=%s", msg.Topic(), e.topic("/set/register/"))
+	logger := log.WithField("topic", msg.Topic())
+	logger.Debug("received a message")
 	switch {
 	case strings.HasPrefix(msg.Topic(), e.topic("/set/register/")):
 		if len(topicParts) != 5 {
-			log.Infof("Bad topic format [%s]", msg.Topic())
+			logger.Warn("unexpected topic format")
 			return
 		}
 		register, err := hex.DecodeString(topicParts[4])
 		if err != nil {
-			log.Infof("Bad register in topic [%s]: %v", msg.Topic(), err)
+			logger.WithError(err).Warn("invalid register in the topic")
 			return
 		}
 		data, err := hex.DecodeString(string(msg.Payload()))
 		if err != nil {
-			log.Infof("Bad payload [%s]: %v", msg.Payload(), err)
+			logger.WithError(err).WithField("payload", string(msg.Payload())).Warn("invalid payload")
 			return
 		}
 		if err := e.car.SetRegister(register[0], data); err != nil {
-			log.Infof("Error setting register %02x: %v", register[0], err)
+			logger.WithError(err).WithField("register", fmt.Sprintf("%02x", register[0])).Warn("could not set the register")
 			return
 		}
 	}
@@ -149,8 +150,8 @@ func init() {
 	// Cobra supports local flags which will only run when this command
 	// is called directly, e.g.:
 	emulatorCmd.PersistentFlags().String("address", ":8080", "Address to listen on")
-	emulatorCmd.Flags().String("mqtt_server", "tcp://127.0.0.1:1883", "Address of MQTT server")
-	emulatorCmd.Flags().String("mqtt_username", "", "Username to login to MQTT server")
-	emulatorCmd.Flags().String("mqtt_password", "", "Password to login to MQTT server")
-	emulatorCmd.Flags().String("mqtt_topic_prefix", "phev/emu", "Prefix for MQTT topics")
+	emulatorCmd.Flags().String("mqtt-server", "tcp://127.0.0.1:1883", "Address of MQTT server")
+	emulatorCmd.Flags().String("mqtt-username", "", "Username to login to MQTT server")
+	emulatorCmd.Flags().String("mqtt-password", "", "Password to login to MQTT server")
+	emulatorCmd.Flags().String("mqtt-topic-prefix", "phev/emu", "Prefix for MQTT topics")
 }

@@ -26,7 +26,6 @@ import (
 	"hash/fnv"
 	"net"
 	"os"
-	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
@@ -101,33 +100,21 @@ func (c *climate) value() (string, bool) {
 	return "", false
 }
 
-var lastWifiRestart time.Time
-
-func restartWifi(cmd *cobra.Command) error {
-	restartRetryTime, err := cmd.Flags().GetDuration("wifi_restart_retry_time")
+// restartWifi takes the wifi interface down and up again. Needs CAP_NET_ADMIN.
+func (m *mqttClient) restartWifi() error {
+	link, err := netlink.LinkByName(m.interfaceName)
 	if err != nil {
-		return err
+		return fmt.Errorf("looking up the interface: %w", err)
 	}
-	if time.Now().Sub(lastWifiRestart) < restartRetryTime {
-		return nil
+	if err := netlink.LinkSetDown(link); err != nil {
+		return fmt.Errorf("setting the interface down: %w", err)
 	}
-	defer func() {
-		lastWifiRestart = time.Now()
-	}()
-
-	restartCommand, _ := cmd.Flags().GetString("wifi_restart_command")
-	if restartCommand == "" {
-		log.Debugf("wifi restart disabled")
-		return nil
+	// Give the driver a moment to tear the association down.
+	time.Sleep(time.Second)
+	if err := netlink.LinkSetUp(link); err != nil {
+		return fmt.Errorf("setting the interface up: %w", err)
 	}
-
-	log.Infof("Attempting to restart wifi")
-
-	restartCmd := exec.Command("sh", "-c", restartCommand)
-
-	stdoutStderr, err := restartCmd.CombinedOutput()
-	log.Infof("Output from wifi restart: %s", stdoutStderr)
-	return err
+	return nil
 }
 
 // Homie 5 device description. Retained defaults to true and settable to false.
@@ -251,6 +238,8 @@ type mqttClient struct {
 	wake chan struct{}
 }
 
+var errInterfaceDisconnected = errors.New("interface disconnected")
+
 func (m *mqttClient) Run(cmd *cobra.Command, args []string) error {
 	var err error
 
@@ -258,11 +247,11 @@ func (m *mqttClient) Run(cmd *cobra.Command, args []string) error {
 	m.wake = make(chan struct{}, 1)
 	m.state = "disconnected"
 	m.values = map[string]string{}
-	mqttServer, _ := cmd.Flags().GetString("mqtt_server")
-	mqttUsername, _ := cmd.Flags().GetString("mqtt_username")
-	mqttPassword, _ := cmd.Flags().GetString("mqtt_password")
-	m.updateInterval, err = cmd.Flags().GetDuration("update_interval")
-	m.pingInterval, err = cmd.Flags().GetDuration("ping_interval")
+	mqttServer, _ := cmd.Flags().GetString("mqtt-server")
+	mqttUsername, _ := cmd.Flags().GetString("mqtt-username")
+	mqttPassword, _ := cmd.Flags().GetString("mqtt-password")
+	m.updateInterval, err = cmd.Flags().GetDuration("update-interval")
+	m.pingInterval, err = cmd.Flags().GetDuration("ping-interval")
 	if err != nil {
 		return err
 	}
@@ -272,6 +261,10 @@ func (m *mqttClient) Run(cmd *cobra.Command, args []string) error {
 	}
 
 	m.interfaceName, err = cmd.Flags().GetString("interface")
+	if err != nil {
+		return err
+	}
+	wifiRestartThreshold, err := cmd.Flags().GetInt("wifi-restart-threshold")
 	if err != nil {
 		return err
 	}
@@ -290,6 +283,8 @@ func (m *mqttClient) Run(cmd *cobra.Command, args []string) error {
 		return token.Error()
 	}
 
+	// Failed attempts since the car was last connected, or wifi was restarted.
+	failedAttempts := 0
 	for {
 		m.mu.Lock()
 		enabled := m.enabled
@@ -299,10 +294,45 @@ func (m *mqttClient) Run(cmd *cobra.Command, args []string) error {
 			<-m.wake
 			continue
 		}
-		if err := m.handlePhev(cmd); errors.Is(err, context.Canceled) {
-			log.Info("car connection closed by command")
-		} else if err != nil {
-			log.WithError(err).Error("car connection lost")
+		started := time.Now()
+		established, err := m.handlePhev(cmd)
+		logger := log.WithField("duration", time.Since(started).Round(time.Millisecond))
+		switch {
+		case established && errors.Is(err, context.Canceled):
+			logger.Info("car connection closed by command")
+			failedAttempts = 0
+		case established:
+			logger.WithError(err).Error("car connection lost")
+			failedAttempts = 0
+		case errors.Is(err, context.Canceled):
+			logger.Info("connecting to the car cancelled by command")
+		case errors.Is(err, errInterfaceDisconnected):
+			// The car is out of range, which is not the same as not answering.
+			logger.WithError(err).Debug("could not connect to the car")
+			failedAttempts = 0
+		default:
+			failedAttempts++
+			logger = logger.WithError(err).WithField("failed_attempts", failedAttempts)
+			if failedAttempts == 1 {
+				logger.Warn("could not connect to the car")
+			} else {
+				logger.Debug("could not connect to the car")
+			}
+			if wifiRestartThreshold > 0 && failedAttempts >= wifiRestartThreshold && m.evaluateLinkState() {
+				restartStart := time.Now()
+				err := m.restartWifi()
+				logger = log.WithFields(log.Fields{
+					"interface":       m.interfaceName,
+					"failed_attempts": failedAttempts,
+					"duration":        time.Since(restartStart).Round(time.Millisecond),
+				})
+				if err != nil {
+					logger.WithError(err).Error("restarted wifi")
+				} else {
+					logger.Info("restarted wifi")
+				}
+				failedAttempts = 0
+			}
 		}
 		time.Sleep(time.Second)
 	}
@@ -590,7 +620,9 @@ func (m *mqttClient) pingTarget(ctx context.Context, address string) error {
 	return err
 }
 
-func (m *mqttClient) handlePhev(cmd *cobra.Command) error {
+// handlePhev maintains a connection to the car until it fails. established is whether the car
+// got connected and started before that.
+func (m *mqttClient) handlePhev(cmd *cobra.Command) (established bool, _ error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	pingTicker := time.NewTicker(m.pingInterval)
@@ -601,7 +633,7 @@ func (m *mqttClient) handlePhev(cmd *cobra.Command) error {
 	address, _ := cmd.Flags().GetString("address")
 	phev, err := client.New(client.AddressOption(address))
 	if err != nil {
-		return err
+		return established, err
 	}
 	m.mu.Lock()
 	m.phev = phev
@@ -633,7 +665,7 @@ func (m *mqttClient) handlePhev(cmd *cobra.Command) error {
 		for {
 			select {
 			case <-ctx.Done():
-				return ctx.Err()
+				return established, ctx.Err()
 			case <-pingTicker.C:
 				if _, err := client.SdNotify(false, client.SdNotifyWatchdog); err != nil {
 					log.WithError(err).Warn("could not reset systemd watchdog")
@@ -659,6 +691,7 @@ func (m *mqttClient) handlePhev(cmd *cobra.Command) error {
 	var encodingErrorCount = 0
 	var lastEncodingError time.Time
 
+	connectStart := time.Now()
 	connectResult := make(chan error, 1)
 	go func() {
 		if err := phev.Connect(ctx); err != nil {
@@ -675,20 +708,26 @@ func (m *mqttClient) handlePhev(cmd *cobra.Command) error {
 	for {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return established, ctx.Err()
 		case err := <-connectResult:
 			if err != nil {
-				return err
+				return established, err
 			}
+			established = true
 			m.publish("connection/state", "online")
 			m.setConnected(true)
+			log.WithFields(log.Fields{
+				"address":    address,
+				"model_year": phev.ModelYear,
+				"duration":   time.Since(connectStart).Round(time.Millisecond),
+			}).Info("connected to the car")
 		case <-linkChanges:
 			if !m.evaluateLinkState() {
-				return fmt.Errorf("interface disconnected")
+				return established, errInterfaceDisconnected
 			}
 		case <-addrChanges:
 			if !m.evaluateLinkState() {
-				return fmt.Errorf("interface disconnected")
+				return established, errInterfaceDisconnected
 			}
 		case <-updateTicker.C:
 			go func() {
@@ -704,7 +743,7 @@ func (m *mqttClient) handlePhev(cmd *cobra.Command) error {
 			}()
 		case msg, ok := <-phev.Recv:
 			if !ok {
-				return fmt.Errorf("connection closed")
+				return established, fmt.Errorf("connection closed")
 			}
 			switch msg.Type {
 			case protocol.CmdInBadEncoding:
@@ -713,7 +752,7 @@ func (m *mqttClient) handlePhev(cmd *cobra.Command) error {
 				}
 				if encodingErrorCount > 5 {
 					phev.Close()
-					return fmt.Errorf("disconnecting due to too many errors")
+					return established, fmt.Errorf("disconnecting due to too many errors")
 				}
 				encodingErrorCount += 1
 				lastEncodingError = time.Now()
@@ -729,7 +768,7 @@ func (m *mqttClient) handlePhev(cmd *cobra.Command) error {
 					Xor:      msg.Xor,
 					Data:     []byte{0x0},
 				}); err != nil {
-					return fmt.Errorf("acknowledging register %02x: %w", msg.Register, err)
+					return established, fmt.Errorf("acknowledging register %02x: %w", msg.Register, err)
 				}
 			}
 		}
@@ -800,10 +839,11 @@ func (m *mqttClient) publishRegister(msg *protocol.PhevMessage) {
 
 func init() {
 	clientCmd.AddCommand(mqttCmd)
-	mqttCmd.Flags().String("mqtt_server", "tcp://127.0.0.1:1883", "Address of MQTT server")
-	mqttCmd.Flags().String("mqtt_username", "", "Username to login to MQTT server")
-	mqttCmd.Flags().String("mqtt_password", "", "Password to login to MQTT server")
-	mqttCmd.Flags().Duration("update_interval", 5*time.Minute, "how often to request for updated PHEV state")
-	mqttCmd.Flags().Duration("ping_interval", 60*time.Second, "how often to ping the PHEV")
+	mqttCmd.Flags().String("mqtt-server", "tcp://127.0.0.1:1883", "Address of MQTT server")
+	mqttCmd.Flags().String("mqtt-username", "", "Username to login to MQTT server")
+	mqttCmd.Flags().String("mqtt-password", "", "Password to login to MQTT server")
+	mqttCmd.Flags().Duration("update-interval", 5*time.Minute, "how often to request for updated PHEV state")
+	mqttCmd.Flags().Duration("ping-interval", 60*time.Second, "how often to ping the PHEV")
 	mqttCmd.Flags().String("interface", "", "The WiFi interface over which to connect")
+	mqttCmd.Flags().Int("wifi-restart-threshold", 5, "Restart the WiFi interface (needs CAP_NET_ADMIN) once this many attempts in a row to connect to the car have failed, 0 to never")
 }

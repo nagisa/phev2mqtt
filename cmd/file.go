@@ -55,8 +55,7 @@ Decode raw hex string messages from the provided filename.
 		}
 		securityKey = &protocol.SecurityKey{}
 		for _, msg := range protocol.NewFromBytes(binData, securityKey) {
-			log.Debug(hex.EncodeToString(msg.Original))
-			log.Infof("%s", msg.ShortForm())
+			log.WithFields(msg.LogFields()).WithField("data", hex.EncodeToString(msg.Original)).Info("decoded a message")
 		}
 	},
 }

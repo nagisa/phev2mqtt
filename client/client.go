@@ -9,6 +9,7 @@ import (
 	log "github.com/sirupsen/logrus"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/buxtronix/phev2mqtt/protocol"
@@ -36,7 +37,7 @@ func (l *Listener) Send(m *protocol.PhevMessage) {
 	select {
 	case l.C <- m:
 	default:
-		log.Debug("%PHEV_RECV_LISTENER% message not sent")
+		log.WithFields(m.LogFields()).Warn("listener is full, dropping a message")
 	}
 }
 
@@ -62,10 +63,17 @@ type Client struct {
 	lMu       sync.Mutex
 	registers chan struct{}
 
-	address  string
-	conn     net.Conn
-	connMu   sync.Mutex
-	lastRx   time.Time
+	address string
+	conn    net.Conn
+	connMu  sync.Mutex
+	lastRx  time.Time
+	// When the TCP connection was established, and what happened on it since.
+	connectedAt time.Time
+	rxMessages  atomic.Int64
+	txMessages  atomic.Int64
+	// The first error that ended the connection, if it was not us who closed it.
+	cause    error
+	causeMu  sync.Mutex
 	started  chan struct{}
 	done     chan struct{}
 	close    sync.Once
@@ -142,11 +150,42 @@ func (c *Client) shutdown() {
 	c.close.Do(func() {
 		close(c.done)
 		c.connMu.Lock()
-		defer c.connMu.Unlock()
-		if c.conn != nil {
-			c.closeErr = c.conn.Close()
+		conn := c.conn
+		if conn != nil {
+			c.closeErr = conn.Close()
 		}
+		c.connMu.Unlock()
+		if conn == nil {
+			return
+		}
+		c.causeMu.Lock()
+		cause := c.cause
+		c.causeMu.Unlock()
+		logger := log.WithFields(log.Fields{
+			"address":     c.address,
+			"duration":    time.Since(c.connectedAt).Round(time.Millisecond),
+			"rx_messages": c.rxMessages.Load(),
+			"tx_messages": c.txMessages.Load(),
+		})
+		if cause != nil {
+			logger = logger.WithError(cause)
+		}
+		logger.Debug("tcp connection closed")
 	})
+}
+
+// fail records why the connection ended, unless it was closed deliberately.
+func (c *Client) fail(err error) {
+	select {
+	case <-c.done:
+		return
+	default:
+	}
+	c.causeMu.Lock()
+	defer c.causeMu.Unlock()
+	if c.cause == nil {
+		c.cause = err
+	}
 }
 
 // SendMessage queues a message unless the connection or context has ended.
@@ -172,11 +211,15 @@ func (c *Client) Connect(ctx context.Context) error {
 	interval, _ := SdWatchdogInterval(5000 * time.Millisecond)
 	dialctx, _ := context.WithTimeout(ctx, interval)
 	dialer := &net.Dialer{}
+	dialStart := time.Now()
 	conn, err := dialer.DialContext(dialctx, "tcp", c.address)
 	if err != nil {
 		return err
 	}
-	log.Info("%PHEV_TCP_CONNECTED%")
+	log.WithFields(log.Fields{
+		"address": c.address,
+		"elapsed": time.Since(dialStart).Round(time.Millisecond),
+	}).Debug("tcp connected")
 	c.connMu.Lock()
 	select {
 	case <-c.done:
@@ -186,6 +229,7 @@ func (c *Client) Connect(ctx context.Context) error {
 	default:
 	}
 	c.conn = conn
+	c.connectedAt = time.Now()
 	c.connMu.Unlock()
 	go func() {
 		select {
@@ -204,20 +248,22 @@ var startTimeout = 20 * time.Second
 
 // Start waits for the client to start.
 func (c *Client) Start(ctx context.Context) error {
-	log.Debug("%%PHEV_START_AWAIT%%")
+	startedAt := time.Now()
 	timeoutCtx, _ := context.WithTimeout(ctx, startTimeout)
 	for {
 		select {
 		case _, ok := <-c.started:
 			if !ok {
-				log.Debug("%%PHEV_START_CLOSED%%")
 				return fmt.Errorf("receiver closed before getting start request")
 			}
-			log.Debug("%%PHEV_START_DONE%%")
+			log.WithFields(log.Fields{
+				"address":    c.address,
+				"elapsed":    time.Since(startedAt).Round(time.Millisecond),
+				"model_year": c.ModelYear,
+			}).Debug("car started")
 		case <-ctx.Done():
 			return fmt.Errorf("operation cancelled")
 		case <-timeoutCtx.Done():
-			log.Debug("%%PHEV_START_TIMEOUT%%")
 			return fmt.Errorf("timed out waiting for start")
 		}
 		return nil
@@ -321,7 +367,7 @@ func (c *Client) manage() {
 			}); err != nil {
 				return
 			}
-			log.Debug("%%PHEV_START18_RECV%%")
+			log.WithFields(m.LogFields()).WithField("model_year", c.ModelYear).Debug("received a start request")
 			c.started <- struct{}{}
 		case protocol.CmdInMy14StartReq:
 			c.ModelYear = ModelYear14
@@ -334,11 +380,10 @@ func (c *Client) manage() {
 			}); err != nil {
 				return
 			}
-			log.Debug("%%PHEV_START14_RECV%%")
+			log.WithFields(m.LogFields()).WithField("model_year", c.ModelYear).Debug("received a start request")
 			c.started <- struct{}{}
 		}
 	}
-	log.Debug("%PHEV_MANAGER_END%%")
 }
 
 func (c *Client) reader() {
@@ -347,21 +392,18 @@ func (c *Client) reader() {
 		data := make([]byte, 4096)
 		n, err := c.conn.Read(data)
 		if err != nil {
-			select {
-			case <-c.done:
-			default:
-				log.Debug("%%PHEV_TCP_READER_ERROR%%: ", err)
-			}
+			c.fail(fmt.Errorf("reading: %w", err))
 			break
 		}
 		c.lastRx = time.Now()
-		log.Tracef("%%PHEV_TCP_RECV_DATA%%: %s", hex.EncodeToString(data[:n]))
+		log.WithFields(log.Fields{"bytes": n, "data": hex.EncodeToString(data[:n])}).Trace("received data")
 		if _, err := SdNotify(false, SdNotifyWatchdog); err != nil {
-			log.Warnf("could not reset systemd watchdog: %v", err)
+			log.WithError(err).Warn("could not reset systemd watchdog")
 		}
 		messages := protocol.NewFromBytes(data[:n], c.key)
 		for _, m := range messages {
-			log.Debugf("%%PHEV_TCP_RECV_MSG%%: [%02x] %s", m.Xor, m.ShortForm())
+			c.rxMessages.Add(1)
+			log.WithFields(m.LogFields()).Debug("received a message")
 			c.lMu.Lock()
 			for _, l := range c.listeners {
 				l.Send(m)
@@ -370,7 +412,6 @@ func (c *Client) reader() {
 			c.Recv <- m
 		}
 	}
-	log.Debug("%PHEV_TCP_READER_CLOSE%")
 	c.shutdown()
 	close(c.Recv)
 	c.lMu.Lock()
@@ -393,20 +434,16 @@ loop:
 			}
 			msg.Xor = 0
 			data := msg.EncodeToBytes(c.key)
-			log.Debugf("%%PHEV_TCP_SEND_MSG%%: [%02x] %s", msg.Xor, msg.ShortForm())
-			log.Tracef("%%PHEV_TCP_SEND_DATA%%: %s", hex.EncodeToString(data))
+			log.WithFields(msg.LogFields()).Debug("sending a message")
+			log.WithFields(log.Fields{"bytes": len(data), "data": hex.EncodeToString(data)}).Trace("sending data")
 			c.conn.(*net.TCPConn).SetWriteDeadline(time.Now().Add(15 * time.Second))
 			if _, err := c.conn.Write(data); err != nil {
-				select {
-				case <-c.done:
-				default:
-					log.Errorf("%%PHEV_TCP_WRITER_ERROR%%: %v", err)
-				}
+				c.fail(fmt.Errorf("writing: %w", err))
 				break loop
 			}
+			c.txMessages.Add(1)
 		}
 	}
-	log.Debug("%PHEV_TCP_WRITER_CLOSE%")
 	c.shutdown()
 	return
 }

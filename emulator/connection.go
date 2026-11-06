@@ -22,7 +22,7 @@ const (
 )
 
 func NewConnection(conn net.Conn, car *Car) *Connection {
-	log.Infof("Connection received!\n")
+	log.WithField("remote", conn.RemoteAddr().String()).Info("accepted a connection")
 	return &Connection{
 		state: conClosed,
 		car:   car,
@@ -93,15 +93,15 @@ func (s *Connection) reader() {
 		data := make([]byte, 4096)
 		n, err := s.conn.Read(data)
 		if err != nil {
-			log.Debugf("%%PHEV_SVC_READER_ERROR%% %v", err)
+			log.WithError(err).WithField("remote", s.conn.RemoteAddr().String()).Debug("could not read, closing the connection")
 			s.conn.Close()
 			return
 		}
-		log.Tracef("%%PHEV_SVC_RECV_RAW%%: %s", hex.EncodeToString(data[:n]))
+		log.WithFields(log.Fields{"bytes": n, "data": hex.EncodeToString(data[:n])}).Trace("received data")
 		msgs := protocol.NewFromBytes(data[:n], s.key)
 		for _, m := range msgs {
 			if m.Type != protocol.CmdOutPingReq {
-				log.Debugf("%%PHEV_SVC_RCV_MSG%%: %s", m.ShortForm())
+				log.WithFields(m.LogFields()).Debug("received a message")
 			}
 			s.lMu.Lock()
 			for _, l := range s.listeners {
@@ -117,17 +117,17 @@ func (s *Connection) writer() {
 		select {
 		case msg, ok := <-s.Send:
 			if !ok {
-				log.Debug("%PHEV_SVC_SEND_CLOSE%")
+				log.Debug("send channel closed, closing the connection")
 				s.Close()
 				return
 			}
 			if msg.Type != protocol.CmdInPingResp {
-				log.Debugf("%%PHEV_SVC_SND_MSG%%: %s", msg.ShortForm())
+				log.WithFields(msg.LogFields()).Debug("sending a message")
 			}
 			data := msg.EncodeToBytes(s.key)
 			s.conn.(*net.TCPConn).SetWriteDeadline(time.Now().Add(15 * time.Second))
 			if _, err := s.conn.Write(data); err != nil {
-				log.Debugf("%%PHEV_SVC_WRITE_ERR%%: %v", err)
+				log.WithError(err).WithField("remote", s.conn.RemoteAddr().String()).Debug("could not write, closing the connection")
 				s.Close()
 				return
 			}

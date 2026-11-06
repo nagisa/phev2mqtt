@@ -50,7 +50,7 @@ func (s *SecurityKey) Update(packet []byte) {
 		s.securityKey = 0x0
 		s.sNum = 0
 		s.rNum = 0
-		log.Debugf("%%PHEV_SEC_KEY_CLEAR%% Cleared security key")
+		log.Debug("cleared the security key")
 		return
 	}
 	// Calculate security key from provided packet.
@@ -82,7 +82,7 @@ func (s *SecurityKey) Update(packet []byte) {
 	// Reset the keymap send/receive indices.
 	s.sNum = 0
 	s.rNum = 0
-	log.Debugf("%%PHEV_SEC_KEY_UPDATE%% Updated security key")
+	log.WithField("security_key", s.securityKey).Debug("updated the security key")
 }
 
 // Fetch and optionally increment the index for the received
@@ -93,14 +93,14 @@ func (s *SecurityKey) Update(packet []byte) {
 // decoding it.
 func (s *SecurityKey) RKey(increment bool) byte {
 	if len(s.keyMap) == 0 {
-		log.Tracef("r_key=empty")
+		log.Trace("no receive key yet")
 		return 0
 	}
 	ret := s.rNum
 	if increment {
 		s.rNum++
 	}
-	log.Tracef("r_key=%d", s.keyMap[ret])
+	log.WithFields(log.Fields{"index": ret, "key": s.keyMap[ret]}).Trace("receive key")
 	return s.keyMap[ret]
 }
 
@@ -112,14 +112,14 @@ func (s *SecurityKey) RKey(increment bool) byte {
 // it to the car.
 func (s *SecurityKey) SKey(increment bool) byte {
 	if len(s.keyMap) == 0 {
-		log.Tracef("s_key=empty")
+		log.Trace("no send key yet")
 		return 0
 	}
 	ret := s.sNum
 	if increment {
 		s.sNum++
 	}
-	log.Tracef("s_key=%d", s.keyMap[ret])
+	log.WithFields(log.Fields{"index": ret, "key": s.keyMap[ret]}).Trace("send key")
 	return s.keyMap[ret]
 }
 

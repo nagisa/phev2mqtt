@@ -73,11 +73,11 @@ func runSet(cmd *cobra.Command, args []string) {
 		}
 	}
 
-	waitTime, err := cmd.Flags().GetDuration("wait_duration")
+	waitTime, err := cmd.Flags().GetDuration("wait-duration")
 	if err != nil {
 		panic(err)
 	}
-	sendInterval, err := cmd.Flags().GetDuration("send_interval")
+	sendInterval, err := cmd.Flags().GetDuration("send-interval")
 	if err != nil {
 		panic(err)
 	}
@@ -121,6 +121,6 @@ func init() {
 	// Cobra supports local flags which will only run when this command
 	// is called directly, e.g.:
 	// registerCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
-	setCmd.Flags().Duration("wait_duration", 10*time.Second, "How long to wait after connecting to car before sending register update")
-	setCmd.Flags().Duration("send_interval", 1*time.Second, "Interval between setting each register")
+	setCmd.Flags().Duration("wait-duration", 10*time.Second, "How long to wait after connecting to car before sending register update")
+	setCmd.Flags().Duration("send-interval", 1*time.Second, "Interval between setting each register")
 }

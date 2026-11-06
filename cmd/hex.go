@@ -35,12 +35,11 @@ should be in hex format, e;g 'dc2b2f762f7f'.`,
 		for _, arg := range args {
 			data, err := hex.DecodeString(arg)
 			if err != nil {
-				log.Errorf("Not a valid hex string [%s]: %v", arg, err)
+				log.WithError(err).WithField("arg", arg).Error("not a valid hex string")
 				continue
 			}
 			for _, msg := range protocol.NewFromBytes(data, securityKey) {
-				log.Debug(hex.EncodeToString(msg.Original))
-				log.Infof("%s", msg.ShortForm())
+				log.WithFields(msg.LogFields()).WithField("data", hex.EncodeToString(msg.Original)).Info("decoded a message")
 			}
 		}
 	},

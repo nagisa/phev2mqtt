@@ -95,7 +95,7 @@ func (s *Connection) sendNextRegister() {
 	s.registerIndex++
 	if s.registerIndex >= len(s.car.Registers) {
 		s.registerIndex = -1
-		log.Debug("Finished sending registers, sending settings")
+		log.WithField("registers", len(s.car.Registers)).Debug("sent all registers, sending settings")
 		s.settingsSender = s.car.Settings.NewSender()
 		s.settingsSender.Start()
 	}
