@@ -342,9 +342,20 @@ func (c *Client) nextRecvMsg(deadline time.Time) (*protocol.PhevMessage, error) 
 	}
 }
 
+// signalStarted tells Start that the car sent a start request. The car repeats the request,
+// and nothing reads this after Start returned, so a full channel must not block manage.
+func (c *Client) signalStarted() {
+	select {
+	case c.started <- struct{}{}:
+	default:
+	}
+}
+
 // manages the connection, handling control messages.
 func (c *Client) manage() {
 	ml := c.AddListener()
+	// Once this returns nothing drains the listener, so it would only fill up and warn.
+	defer c.RemoveListener(ml)
 	defer close(c.started)
 	for m := range ml.C {
 		switch m.Type {
@@ -368,7 +379,7 @@ func (c *Client) manage() {
 				return
 			}
 			log.WithFields(m.LogFields()).WithField("model_year", c.ModelYear).Debug("received a start request")
-			c.started <- struct{}{}
+			c.signalStarted()
 		case protocol.CmdInMy14StartReq:
 			c.ModelYear = ModelYear14
 			if err := c.SendMessage(context.Background(), &protocol.PhevMessage{
@@ -381,7 +392,7 @@ func (c *Client) manage() {
 				return
 			}
 			log.WithFields(m.LogFields()).WithField("model_year", c.ModelYear).Debug("received a start request")
-			c.started <- struct{}{}
+			c.signalStarted()
 		}
 	}
 }
