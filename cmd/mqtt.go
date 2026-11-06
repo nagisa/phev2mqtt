@@ -236,6 +236,8 @@ type mqttClient struct {
 	enabled bool
 	// Wakes up Run when the connection gets enabled.
 	wake chan struct{}
+	// What evaluateLinkState last found wrong with the link, to log changes only.
+	linkProblem string
 }
 
 var errInterfaceDisconnected = errors.New("interface disconnected")
@@ -536,19 +538,39 @@ func (m *mqttClient) setClimate(ctx context.Context, phev *client.Client, value 
 // soon as the link state changes again (i.e. vehicle enters the driveway.)
 func (m *mqttClient) evaluateLinkState() bool {
 	logger := log.WithField("interface", m.interfaceName)
+	// This is polled, so only the first report of a problem is worth more than debug.
+	reportProblem := func(problem string) *log.Entry {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		changed := m.linkProblem != problem
+		m.linkProblem = problem
+		if changed {
+			return logger.WithField("problem", problem)
+		}
+		return nil
+	}
 	link, err := netlink.LinkByName(m.interfaceName)
 	// WiFi interface is not present altogether.
 	if err != nil {
-		logger.WithError(err).Error("interface is not available")
+		if l := reportProblem("unavailable"); l != nil {
+			l.WithError(err).Error("interface is not available")
+		} else {
+			logger.WithError(err).Trace("interface is not available")
+		}
 		m.publish("connection/state", "offline")
 		return false
 	}
 	// WiFi is not associated. E.g. vehicle not in the driveway.
 	if link.Attrs().OperState != netlink.OperUp {
-		logger.Debug("interface is not up")
+		if l := reportProblem("down"); l != nil {
+			l.Info("interface is not up")
+		} else {
+			logger.Trace("interface is not up")
+		}
 		m.publish("connection/state", "offline")
 		return false
 	}
+	reportProblem("")
 
 	addrs, _ := netlink.AddrList(link, netlink.FAMILY_V4)
 	logger.WithField("addresses", addrs).Debug("interface is up")
