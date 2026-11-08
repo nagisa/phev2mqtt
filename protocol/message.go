@@ -334,7 +334,49 @@ const (
 	DoorStatusRegister       = 0x24
 	WIFISSIDRegister         = 0x28
 	ECUVersionRegister       = 0xc0
+
+	AlertRegister               = 0x13
+	TheftAlarmRegister          = 0x14
+	AckAlertRegister            = 0x07
+	AckTheftAlarmRegister       = 0x08
+	AckChargeTimerErrorRegister = 0x12
 )
+
+// AlertAckRegister tells whether a register notification carries an alert,
+// and if so which register the client writes 0x1 to in order to acknowledge
+// it.
+func AlertAckRegister(register byte, data []byte) (byte, bool) {
+	switch {
+	case register == PreACStateRegister && len(data) == 3 && PreACState(data[0]) == PreACTerminated:
+		return SetAckPreACTermRegister, true
+	case register == AlertRegister && len(data) == 1 && data[0] == 1:
+		return AckAlertRegister, true
+	case register == TheftAlarmRegister:
+		if _, ok := TheftAlarm(data); ok {
+			return AckTheftAlarmRegister, true
+		}
+	case register == ChargePlugRegister && len(data) == 2 && data[1] == 3:
+		return AckChargeTimerErrorRegister, true
+	}
+	return 0, false
+}
+
+var theftAlarms = []string{
+	1: "unauthorized intrusion",
+	2: "illegal vehicle movement",
+	3: "door opened illegally",
+	4: "illegal key used",
+	5: "unauthorized vibration",
+	6: "other illegal access",
+}
+
+// TheftAlarm describes the alarm in the theft alarm register, if one went off.
+func TheftAlarm(data []byte) (string, bool) {
+	if len(data) != 7 || data[6] == 0 || int(data[6]) >= len(theftAlarms) {
+		return "", false
+	}
+	return theftAlarms[data[6]], true
+}
 
 type Register interface {
 	Decode(*PhevMessage)
@@ -881,14 +923,20 @@ func (r *RegisterACMode) Register() byte {
 
 type RegisterChargePlug struct {
 	Connected bool
-	raw       []byte
+	// TimerError is set when the charge timer could not be activated.
+	TimerError bool
+	raw        []byte
 }
 
 func (r *RegisterChargePlug) Decode(m *PhevMessage) {
 	if len(m.Data) != 2 {
 		return
 	}
-	r.Connected = (m.Data[1] == 1 || m.Data[0] > 0)
+	// Byte 0 is non-zero while charging. Byte 1 is 1 while waiting for a
+	// charge timer and 2 when plugged in otherwise; 3 is a charge timer error
+	// after the plug was pulled.
+	r.Connected = m.Data[0] > 0 || m.Data[1] == 1 || m.Data[1] == 2
+	r.TimerError = m.Data[1] == 3
 	r.raw = m.Data
 }
 

@@ -123,6 +123,17 @@ ignored, and logged, while the car isn't connected.
 | connection/state | enum *offline*, *waiting-for-ip*, *connecting*, *online* | | Wifi connection status to the car |
 | connection/command | enum *off*, *on*, *restart* | yes, not retained | Change the car connection state |
 
+Alerts the car raises are published as Homie device alerts, `homie/5/phev/$alert/<id>`, with a
+human readable message. An alert is removed by publishing an empty message. phev2mqtt
+acknowledges the alerts to the car, as the official app does.
+
+| Alert | Raised | Removed |
+|---|---|---|
+| theft-alarm | When the car's theft alarm goes off, naming the cause | When the car is next unlocked |
+| climate-stopped | When the pre-A/C stopped early, e.g. due to an open door or low battery | When the climate state changes |
+| charge-timer-error | When the charge timer could not be activated | When the plug state changes |
+| unidentified | When the car raises an alert whose meaning is not known yet (register 0x13) | When the car stops reporting it |
+
 Raw register values are logged at the debug level, with the register and the data as fields.
 
 Under systemd, the logs go to the journal natively, with their priorities and with their fields as

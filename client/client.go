@@ -62,6 +62,9 @@ type Client struct {
 	listeners []*Listener
 	lMu       sync.Mutex
 	registers chan struct{}
+	// The alert acknowledgements being sent, by the register they are written to.
+	alertAcks   map[byte]bool
+	alertAcksMu sync.Mutex
 
 	address string
 	conn    net.Conn
@@ -104,6 +107,7 @@ func New(opts ...Option) (*Client, error) {
 		started:   make(chan struct{}, 2),
 		done:      make(chan struct{}),
 		registers: make(chan struct{}, 1),
+		alertAcks: map[byte]bool{},
 		listeners: []*Listener{},
 		address:   DefaultAddress,
 		key:       &protocol.SecurityKey{},
@@ -361,8 +365,15 @@ func (c *Client) manage(ml *Listener) {
 	for m := range ml.C {
 		switch m.Type {
 		case protocol.CmdInResp:
-			if m.Ack == protocol.Request && m.Register == protocol.SettingsRegister {
+			if m.Ack != protocol.Request {
+				break
+			}
+			if m.Register == protocol.SettingsRegister {
 				c.Settings.FromRegister(m.Data)
+			}
+			// The register numbers are only known for MY18.
+			if ack, ok := protocol.AlertAckRegister(m.Register, m.Data); ok && c.ModelYear == ModelYear18 {
+				c.ackAlert(m, ack)
 			}
 		case protocol.CmdInStartResp:
 			if err := c.SendMessage(context.Background(), protocol.NewPingRequestMessage(0xa)); err != nil {
@@ -402,6 +413,34 @@ func (c *Client) manage(ml *Listener) {
 			c.signalStarted()
 		}
 	}
+}
+
+// ackAlert acknowledges an alert the car notified, as the official app does once the alert is
+// dismissed. The car repeats notifications, so only one acknowledgement per register is in flight.
+func (c *Client) ackAlert(m *protocol.PhevMessage, ack byte) {
+	c.alertAcksMu.Lock()
+	defer c.alertAcksMu.Unlock()
+	if c.alertAcks[ack] {
+		return
+	}
+	c.alertAcks[ack] = true
+	fields := log.Fields{
+		"register":     fmt.Sprintf("%02x", m.Register),
+		"data":         hex.EncodeToString(m.Data),
+		"ack_register": fmt.Sprintf("%02x", ack),
+	}
+	go func() {
+		defer func() {
+			c.alertAcksMu.Lock()
+			delete(c.alertAcks, ack)
+			c.alertAcksMu.Unlock()
+		}()
+		if err := c.SetRegister(context.Background(), ack, []byte{0x1}); err != nil {
+			log.WithFields(fields).WithError(err).Warn("could not acknowledge an alert")
+			return
+		}
+		log.WithFields(fields).Info("acknowledged an alert")
+	}()
 }
 
 func (c *Client) reader() {

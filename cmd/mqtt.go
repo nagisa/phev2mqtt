@@ -801,6 +801,11 @@ func (m *mqttClient) publishBool(property string, value bool) {
 	m.publish(property, strconv.FormatBool(value))
 }
 
+// publishAlert raises a Homie device alert, or clears it if the message is empty.
+func (m *mqttClient) publishAlert(id, message string) {
+	m.publish("$alert/"+id, message)
+}
+
 func (m *mqttClient) publishClimate() {
 	m.mu.Lock()
 	value, ok := m.climate.value()
@@ -831,6 +836,11 @@ func (m *mqttClient) publishRegister(msg *protocol.PhevMessage) {
 		m.climate.setState(reg.State)
 		m.mu.Unlock()
 		m.publishClimate()
+		alert := ""
+		if reg.State == protocol.PreACTerminated {
+			alert = "Pre-A/C stopped: a door may be open, or the battery level or temperature is low"
+		}
+		m.publishAlert("climate-stopped", alert)
 	case *protocol.RegisterChargeStatus:
 		m.publishBool("charge/charging", reg.Charging)
 		m.publish("charge/remaining", strconv.Itoa(reg.Remaining))
@@ -843,6 +853,11 @@ func (m *mqttClient) publishRegister(msg *protocol.PhevMessage) {
 		m.publishBool("doors/bonnet", reg.Bonnet)
 		m.publishBool("doors/boot", reg.Boot)
 		m.publishBool("lights/head", reg.Headlights)
+		// The car only reports a theft alarm until it is acknowledged, so the alert stays until
+		// the owner is evidently back.
+		if !reg.Locked {
+			m.publishAlert("theft-alarm", "")
+		}
 	case *protocol.RegisterBatteryLevel:
 		if !m.everPublishedBatteryLevel || reg.Level > 5 {
 			m.everPublishedBatteryLevel = true
@@ -856,6 +871,28 @@ func (m *mqttClient) publishRegister(msg *protocol.PhevMessage) {
 		m.publishBool("lights/hazard", reg.Hazard)
 	case *protocol.RegisterChargePlug:
 		m.publishBool("charge/plug", reg.Connected)
+		alert := ""
+		if reg.TimerError {
+			alert = "Charge timer could not be activated"
+		}
+		m.publishAlert("charge-timer-error", alert)
+	default:
+		switch msg.Register {
+		case protocol.TheftAlarmRegister:
+			if alarm, ok := protocol.TheftAlarm(msg.Data); ok {
+				log.WithFields(log.Fields{"alarm": alarm, "data": hex.EncodeToString(msg.Data)}).Warn("theft alarm")
+				m.publishAlert("theft-alarm", "Theft alarm: "+alarm)
+			}
+		case protocol.AlertRegister:
+			// What this alert means is not known. Publishing it lets it be matched with what
+			// happened to the car.
+			alert := ""
+			if _, ok := protocol.AlertAckRegister(msg.Register, msg.Data); ok {
+				log.WithField("data", hex.EncodeToString(msg.Data)).Warn("unidentified alert")
+				alert = "The car raised an unidentified alert (register 13)"
+			}
+			m.publishAlert("unidentified", alert)
+		}
 	}
 }
 
