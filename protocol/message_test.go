@@ -117,3 +117,71 @@ func TestDecodeEncodeBytes(t *testing.T) {
 		})
 	}
 }
+
+func TestDecodeFailureLogFields(t *testing.T) {
+	// Seen after sending a register-ack encoded with 0x57 while the car expected 0x00.
+	data, err := hex.DecodeString("38f0f555f486")
+	if err != nil {
+		t.Fatal(err)
+	}
+	msgs := NewFromBytes(data, &SecurityKey{})
+	if len(msgs) != 1 {
+		t.Fatalf("NewFromBytes() got %d messages, want 1", len(msgs))
+	}
+	fields := msgs[0].LogFields()
+	if fields["type"] != "decode-failure" || fields["decoded_type"] != "a1" || fields["key"] != "00" {
+		t.Fatalf("LogFields() = %v", fields)
+	}
+}
+
+func TestRekeyRequest(t *testing.T) {
+	msg := NewRekeyRequestMessage(CmdOutMy18StartResp)
+	if got := hex.EncodeToString(msg.EncodeToBytes(&SecurityKey{})); got != "e504000100ea" {
+		t.Fatalf("EncodeToBytes() = %s, want e504000100ea", got)
+	}
+	if got := msg.LogFields()["type"]; got != "rekey-request" {
+		t.Fatalf("LogFields() type = %v", got)
+	}
+}
+
+// keyFromCar returns the key set up by a start request the car sent.
+func keyFromCar(t *testing.T) *SecurityKey {
+	t.Helper()
+	key := &SecurityKey{}
+	if msgs := NewFromBytes(mustHex(t, "5e0c0001b637cfe9a5158b6901bf"), key); len(msgs) != 1 {
+		t.Fatalf("NewFromBytes() got %d messages, want 1", len(msgs))
+	}
+	return key
+}
+
+func mustHex(t *testing.T, s string) []byte {
+	t.Helper()
+	data, err := hex.DecodeString(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func TestRekeyResponseKeepsKey(t *testing.T) {
+	key := keyFromCar(t)
+	// The car acknowledges a rekey request with an encrypted start request carrying no key.
+	msgs := NewFromBytes(mustHex(t, "22787d7d7c18"), key)
+	if len(msgs) != 1 || msgs[0].LogFields()["type"] != "rekey-response" {
+		t.Fatalf("NewFromBytes() = %v", msgs)
+	}
+	if got := key.SKey(false); got != 0xcc {
+		t.Fatalf("SKey() = %02x after a rekey response, want cc", got)
+	}
+}
+
+func TestBadEncodingResyncsSendKey(t *testing.T) {
+	key := keyFromCar(t)
+	// The car expects the key in slot 5.
+	if msgs := NewFromBytes(mustHex(t, "eb545159bce5"), key); len(msgs) != 1 || msgs[0].Type != CmdInBadEncoding {
+		t.Fatalf("NewFromBytes() = %v", msgs)
+	}
+	if got := key.SKey(false); got != 0xec {
+		t.Fatalf("SKey() = %02x, want ec", got)
+	}
+}

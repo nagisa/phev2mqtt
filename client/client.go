@@ -238,9 +238,11 @@ func (c *Client) Connect(ctx context.Context) error {
 		case <-c.done:
 		}
 	}()
+	// Listen before reading, so manage sees the start request even if the car sends it at once.
+	ml := c.AddListener()
 	go c.reader()
 	go c.writer()
-	go c.manage()
+	go c.manage(ml)
 	return nil
 }
 
@@ -352,8 +354,7 @@ func (c *Client) signalStarted() {
 }
 
 // manages the connection, handling control messages.
-func (c *Client) manage() {
-	ml := c.AddListener()
+func (c *Client) manage(ml *Listener) {
 	// Once this returns nothing drains the listener, so it would only fill up and warn.
 	defer c.RemoveListener(ml)
 	defer close(c.started)
@@ -368,6 +369,9 @@ func (c *Client) manage() {
 				return
 			}
 		case protocol.CmdInMy18StartReq:
+			if m.Ack != protocol.Request {
+				break // The car acknowledging our rekey request.
+			}
 			c.ModelYear = ModelYear18
 			if err := c.SendMessage(context.Background(), &protocol.PhevMessage{
 				Type:     protocol.CmdOutMy18StartResp,
@@ -381,6 +385,9 @@ func (c *Client) manage() {
 			log.WithFields(m.LogFields()).WithField("model_year", c.ModelYear).Debug("received a start request")
 			c.signalStarted()
 		case protocol.CmdInMy14StartReq:
+			if m.Ack != protocol.Request {
+				break // The car acknowledging our rekey request.
+			}
 			c.ModelYear = ModelYear14
 			if err := c.SendMessage(context.Background(), &protocol.PhevMessage{
 				Type:     protocol.CmdOutMy14StartResp,
@@ -433,28 +440,106 @@ func (c *Client) reader() {
 	return
 }
 
+// The encrypted message types we send in reply to the car: acks to its register notifications and
+// pings in reply to its keepalives. The writer rekeys ahead of time when one of these would
+// collide, so that the reply is not held back while the car waits for it. Messages we send on our
+// own initiative only rekey once they are about to be sent.
+var replyTypes = []byte{protocol.CmdOutSend, protocol.CmdOutPingReq}
+
+// How long to wait for the car to answer a rekey request.
+var rekeyTimeout = 2 * time.Second
+
 func (c *Client) writer() {
-loop:
+	defer c.shutdown()
+	// Messages waiting to be sent. They are held back while the car rekeys.
+	var queue []*protocol.PhevMessage
+	var rekeyDeadline <-chan time.Time
+	// The type of the start responses we sent, telling the car's model year. Kept here rather
+	// than read from ModelYear, which manage updates concurrently.
+	var startResponse byte
+	rekey := func(why string) error {
+		log.WithField("reason", why).Debug("asking the car to rekey")
+		rekeyDeadline = time.After(rekeyTimeout)
+		return c.write(protocol.NewRekeyRequestMessage(startResponse))
+	}
+	// Set when the car did not answer a rekey request. Until it sends a new start request,
+	// collisions are left to be recovered from by resyncing on the CmdInBadEncoding that follows.
+	rekeyFailed := false
 	for {
+		for rekeyDeadline == nil && len(queue) > 0 {
+			msg := queue[0]
+			if !rekeyFailed && c.collides(msg.Type, startResponse) {
+				if err := rekey(fmt.Sprintf("a %02x message would collide", msg.Type)); err != nil {
+					c.fail(err)
+					return
+				}
+				break
+			}
+			if err := c.write(msg); err != nil {
+				c.fail(err)
+				return
+			}
+			queue = queue[1:]
+		}
+		if rekeyDeadline == nil && !rekeyFailed {
+			for _, typ := range replyTypes {
+				if c.collides(typ, startResponse) {
+					if err := rekey(fmt.Sprintf("the next %02x message would collide", typ)); err != nil {
+						c.fail(err)
+						return
+					}
+					break
+				}
+			}
+		}
 		select {
 		case <-c.done:
-			break loop
+			return
+		case <-rekeyDeadline:
+			log.WithField("timeout", rekeyTimeout).Warn("the car did not rekey, not asking again until it restarts")
+			rekeyDeadline = nil
+			rekeyFailed = true
 		case msg, ok := <-c.Send:
 			if !ok {
-				break loop
+				return
 			}
-			msg.Xor = 0
-			data := msg.EncodeToBytes(c.key)
-			log.WithFields(msg.LogFields()).Debug("sending a message")
-			log.WithFields(log.Fields{"bytes": len(data), "data": hex.EncodeToString(data)}).Trace("sending data")
-			c.conn.(*net.TCPConn).SetWriteDeadline(time.Now().Add(15 * time.Second))
-			if _, err := c.conn.Write(data); err != nil {
-				c.fail(fmt.Errorf("writing: %w", err))
-				break loop
+			switch msg.Type {
+			case protocol.CmdOutMy18StartResp, protocol.CmdOutMy14StartResp:
+				// Not encrypted, and the car waits for it before using the new key.
+				if err := c.write(msg); err != nil {
+					c.fail(err)
+					return
+				}
+				startResponse = msg.Type
+				rekeyDeadline = nil
+				rekeyFailed = false
+			default:
+				queue = append(queue, msg)
 			}
-			c.txMessages.Add(1)
 		}
 	}
-	c.shutdown()
-	return
+}
+
+// collides is whether a message of type typ, encoded with the current send key, would begin
+// with startResponse, the type of the unencrypted start response. The car takes such messages
+// for one and drops them without advancing its receive key, after which it fails to decode
+// everything we send.
+func (c *Client) collides(typ, startResponse byte) bool {
+	if startResponse == 0 {
+		return false // Not started yet.
+	}
+	return typ != startResponse && typ^c.key.SKey(false) == startResponse
+}
+
+func (c *Client) write(msg *protocol.PhevMessage) error {
+	msg.Xor = 0
+	data := msg.EncodeToBytes(c.key)
+	log.WithFields(msg.LogFields()).Debug("sending a message")
+	log.WithFields(log.Fields{"bytes": len(data), "data": hex.EncodeToString(data)}).Trace("sending data")
+	c.conn.(*net.TCPConn).SetWriteDeadline(time.Now().Add(15 * time.Second))
+	if _, err := c.conn.Write(data); err != nil {
+		return fmt.Errorf("writing: %w", err)
+	}
+	c.txMessages.Add(1)
+	return nil
 }

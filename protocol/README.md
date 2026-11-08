@@ -132,7 +132,7 @@ Summary:
 |  0xe4 | Security ack      | client -> car | Ack security keys (MY14)             |
 |  0x2f | Keepalive request | car -> client | Sent by car to check client presence |
 |  0xbb | Bad Xor?          | car -> client | Sent when XOR value is incorrect.    |
-|  0xcc | Bad Xor?          | car -> client | Sent when XOR value is incorrect.    |
+|  0xcc | Decode failure    | car -> client | How the car decoded a bad message.   |
 
 ### Ping request (0xf3)
 
@@ -226,6 +226,38 @@ packet is reset using this value for the Xor, then it will likely be accepted.
 
 This can be a workaround given the current unknown algorithm for generating
 XOR values.
+
+### Rekey (0xe5 / 0x5e)
+
+```text
+[e5][04][00][01][00][<cksum>]
+```
+
+Sent unencrypted by the client to ask for a new key (`0xe4` for MY14). The car
+acknowledges with an encrypted `[5e][04][01][01][00]`, followed by an
+unencrypted 0x5e security init packet carrying the new key. Both sides then
+start again from the first key of the new key map.
+
+The car looks for the unencrypted start response type before decrypting, so
+an encrypted packet whose first byte happens to be `0xe5` (e.g. a `0xf6` packet
+under key `0x13`) is dropped without advancing the car's receive key. The
+client rekeys instead of sending such a packet.
+
+### Decode failure (0xcc)
+
+```text
+[cc][04][01][<type>][<key>][<cksum>]
+```
+
+Sent by the car just before a 0xbb packet, when it fails to decode a packet
+from the client. The car advances its receive key after any packet it fails to
+decode, and the `<exp>` value of the following 0xbb packet is the key it will
+use next.
+
+The `<key>` field contains the XOR value the car used to decode the packet,
+and `<type>` contains the first (type) byte of the packet as decoded with
+that value. For a `0xf6` packet encoded with XOR `x` that means
+`<type> = 0xf6 ^ x ^ <key>`.
 
 ## Registers
 

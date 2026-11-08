@@ -1,10 +1,12 @@
 package protocol
 
 import (
+	"bytes"
 	"encoding/hex"
 	"fmt"
 	log "github.com/sirupsen/logrus"
 	"math/rand"
+	"sync"
 )
 
 type SecurityState int
@@ -18,6 +20,8 @@ const (
 // SecurityKey implements the algorithm for the session encoding/decoding
 // keys.
 type SecurityKey struct {
+	// The reader and the writer of a connection use the key concurrently.
+	mu          sync.Mutex
 	State       SecurityState
 	proposedKey []byte
 	securityKey byte
@@ -45,6 +49,8 @@ func (s *SecurityKey) AcceptProposal() {
 // then from this security key a key map is generated, essentially
 // an array of session keys which are rotated through.
 func (s *SecurityKey) Update(packet []byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if len(packet) < 12 {
 		s.keyMap = []byte{} // Clear security keys.
 		s.securityKey = 0x0
@@ -92,6 +98,8 @@ func (s *SecurityKey) Update(packet []byte) {
 // The returned value is XORed with the raw packet from the car before
 // decoding it.
 func (s *SecurityKey) RKey(increment bool) byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if len(s.keyMap) == 0 {
 		log.Trace("no receive key yet")
 		return 0
@@ -111,6 +119,8 @@ func (s *SecurityKey) RKey(increment bool) byte {
 // The returned value is XORed with the raw packet before sending
 // it to the car.
 func (s *SecurityKey) SKey(increment bool) byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if len(s.keyMap) == 0 {
 		log.Trace("no send key yet")
 		return 0
@@ -121,6 +131,21 @@ func (s *SecurityKey) SKey(increment bool) byte {
 	}
 	log.WithFields(log.Fields{"index": ret, "key": s.keyMap[ret]}).Trace("send key")
 	return s.keyMap[ret]
+}
+
+// Resync moves the send key index to the slot holding key.
+//
+// The car advances its receive index on every message it fails to decode and reports the key
+// it will use next in a CmdInBadEncoding message, so this brings the send index back in step.
+func (s *SecurityKey) Resync(key byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	idx := bytes.IndexByte(s.keyMap, key)
+	if idx < 0 || byte(idx) == s.sNum {
+		return
+	}
+	log.WithFields(log.Fields{"from": s.sNum, "to": idx, "key": key}).Info("resynchronised the send key")
+	s.sNum = byte(idx)
 }
 
 func XorMessageWith(message []byte, xor byte) []byte {

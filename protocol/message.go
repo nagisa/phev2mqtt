@@ -23,7 +23,8 @@ const (
 	CmdOutMy14StartResp = 0xe4
 
 	CmdInBadEncoding = 0xbb
-	CmdInUnkn3       = 0xcc
+	// Sent by the car along with CmdInBadEncoding, describing how it failed to decode our message.
+	CmdInDecodeFailure = 0xcc
 
 	CmdInStartResp      = 0x2f
 	CmdOutStartSendMy18 = 0xf2
@@ -52,6 +53,8 @@ var messageStr = map[byte]string{
 	0x2f: "StartResp",
 	0xe4: "StartResp14",
 	0x4e: "StartReq14",
+	0xbb: "BadEncoding",
+	0xcc: "DecodeFailure",
 }
 
 type PhevMessage struct {
@@ -89,6 +92,12 @@ func (p *PhevMessage) LogFields() log.Fields {
 		if len(p.Data) > 0 {
 			fields["expected"] = fmt.Sprintf("%02x", p.Data[0])
 		}
+	case CmdInDecodeFailure:
+		// The type byte of our message after the car decoded it with `key`.
+		fields["decoded_type"] = fmt.Sprintf("%02x", p.Register)
+		if len(p.Data) > 0 {
+			fields["key"] = fmt.Sprintf("%02x", p.Data[0])
+		}
 	default:
 		fields["register"] = fmt.Sprintf("%02x", p.Register)
 		fields["payload"] = hex.EncodeToString(p.Data)
@@ -120,16 +129,26 @@ func (p *PhevMessage) logType() string {
 		return "start-send"
 	case CmdInStartResp:
 		return "start-response"
-	case CmdInMy18StartReq:
-		return "start-request-my18"
-	case CmdOutMy18StartResp:
-		return "start-response-my18"
-	case CmdInMy14StartReq:
+	case CmdInMy18StartReq, CmdInMy14StartReq:
+		if p.Ack == Ack {
+			return "rekey-response"
+		}
+		if p.Type == CmdInMy18StartReq {
+			return "start-request-my18"
+		}
 		return "start-request-my14"
-	case CmdOutMy14StartResp:
+	case CmdOutMy18StartResp, CmdOutMy14StartResp:
+		if p.Ack == Request {
+			return "rekey-request"
+		}
+		if p.Type == CmdOutMy18StartResp {
+			return "start-response-my18"
+		}
 		return "start-response-my14"
 	case CmdInBadEncoding:
 		return "bad-encoding"
+	case CmdInDecodeFailure:
+		return "decode-failure"
 	default:
 		return fmt.Sprintf("unknown-%02x", p.Type)
 	}
@@ -183,7 +202,14 @@ func (p *PhevMessage) DecodeFromBytes(data []byte, key *SecurityKey) error {
 	p.Original = data
 	switch p.Type {
 	case CmdInMy18StartReq, CmdInMy14StartReq:
-		key.Update(p.OriginalXored)
+		// The car acknowledges a rekey request with one of these, carrying no key.
+		if p.Ack == Request {
+			key.Update(p.OriginalXored)
+		}
+	case CmdInBadEncoding:
+		if len(p.Data) > 0 {
+			key.Resync(p.Data[0])
+		}
 	case CmdInResp:
 		key.RKey(true)
 	case CmdOutSend:
@@ -930,6 +956,12 @@ func (r *RegisterWIFISSID) Register() byte {
 
 func NewPingRequestMessage(id byte) *PhevMessage {
 	return NewMessage(CmdOutPingReq, id, false, []byte{0x0})
+}
+
+// NewRekeyRequestMessage asks the car to send a new start request, which carries a new key.
+// startResponse is CmdOutMy18StartResp or CmdOutMy14StartResp, matching the car.
+func NewRekeyRequestMessage(startResponse byte) *PhevMessage {
+	return NewMessage(startResponse, 0x1, false, []byte{0x0})
 }
 
 func NewPingResponseMessage(id byte) *PhevMessage {
