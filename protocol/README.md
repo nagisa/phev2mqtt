@@ -289,20 +289,20 @@ There seem to be two types of register layout (A/B).
 |0x4       | Charge timer settings        | 20 / 1 | 10 / ??   | [3,1,3,1,3,1,3,1,3,1] / []    |                                                                                                     |
 |0x5       | Climate timer settings       | 16 / 1 | 30 / 235  | [1,2,1,2,1,2,1,2,1,2,1] / [1] |                                                                                                     |
 |0x6       | ??                           | 20 / 1 | 74 / 46   | [1,17,1,1] / [1]              | Similar to 0x15, with a different first byte, e.g. `00` VIN `0002`                                         |
-|0x7       | Wi-Fi channel                | 1      | 237       | [1]                           |                                                                                                     |
+|0x7       | Wi-Fi channel                | 1      | 237       | [1]                           | Current channel: 0=channel 3, 1=channel 8                                                           |
 |0x8       | ??                           | 1      | 234       | [1]                           |                                                                                                     |
 |0x9       | ??                           | 1      | 49        | [1]                           |                                                                                                     |
 |0xa       | ??                           | 1      | 50        | [1]                           |                                                                                                     |
-|0xb       | ??                           | 1      | 238 / 236 | [1]                           | Wi-Fi / version related                                                                             |
+|0xb       | ??                           | 1      | 238 / 236 | [1]                           | Wi-Fi communication setting, as written to 0x18                                                     |
 |0xc       | Air-con related              | 1      | 51        | [1]                           | Changes `01` -> `04` when the charger is unplugged                                                  |
 |0xd       | Air-con related              | 1      | 52        | [1]                           | Changes `01` -> `02` when the charger is unplugged                                                  |
 |0xe       | Charge setting               | 1      | 53        | [1]                           |                                                                                                     |
 |0xf       | ??                           | 1      | 54        | [1]                           | Not used by the official app, e.g. `00`                                                             |
-|0x10      | AirCon State                 | 3 / 1  | 55        | [1,1,1] / [1]                 | Alert, acknowledged by writing 0x13                                                                 |
+|0x10      | AirCon State                 | 3 / 1  | 55        | [1,1,1] / [1]                 | Byte 0 = 3 is an alert, acknowledged by writing 0x13                                                |
 |0x11      | ??                           | 1      | 58        | [1]                           | Not used by the official app, e.g. `00`                                                             |
 |0x12      | TimeSync                     | 7      | 59        | [7]                           |                                                                                                     |
-|0x13      | Alert                        | 1      | 66        | [1]                           | Acknowledged by writing 0x07                                                                        |
-|0x14      | Alert                        | 7      | 67        | [6,1]                         | Acknowledged by writing 0x08                                                                        |
+|0x13      | Alert                        | 1      | 66        | [1]                           | Value 1 is an alert, acknowledged by writing 0x07                                                   |
+|0x14      | Theft alarm                  | 7      | 67        | [6,1]                         | Bytes 0-5 probably a timestamp, byte 6 the alarm type; see below                                    |
 |0x15      | VIN                          | 20     | 246 / 74  | [19,11] / [1,17,1,1]          |                                                                                                     |
 |0x16      | Vehicle settings             | 8      | 95        | [8]                           | See below                                                                                           |
 |0x17      | Charge timer state           | 1      | 103       | [1]                           |                                                                                                     |
@@ -312,7 +312,7 @@ There seem to be two types of register layout (A/B).
 |0x1b      | Charge / time setting        | 1      | 134       | [1]                           | Answered by writing its first byte to 0x17                                                          |
 |0x1c      | AirCon Mode                  | 1      | 136       | [1]                           |                                                                                                     |
 |0x1d      | Battery Level / light status | 4      | 137       | [1,1,1,1]                     |                                                                                                     |
-|0x1e      | Charge plug status           | 2      | 141       | [1,1]                         | Alert, acknowledged by writing 0x12                                                                 |
+|0x1e      | Charge plug status           | 2      | 141       | [1,1]                         | See below; byte 1 = 3 is an alert, acknowledged by writing 0x12                                     |
 |0x1f      | Charge State                 | 3      | 143       | [1,2]                         |                                                                                                     |
 |0x20      | Charge settings              | 10     | 146       | [2,2,2,2,2]                   |                                                                                                     |
 |0x21      | ??                           | 1      | 156       | [1]                           |                                                                                                     |
@@ -321,7 +321,7 @@ There seem to be two types of register layout (A/B).
 |0x24      | Door Lock Status             | 10     | 168       | [1,1,1,1,1,1,1,1,1,1]         |                                                                                                     |
 |0x25      | ??                           | 3      | 178       | [1,1,1]                       | Not used by the official app, e.g. `0e00ff`                                                         |
 |0x26      | Alert                        | 1      | 181       | [1]                           | Raised while 0x1a byte 0 is 1-6                                                                     |
-|0x27      | Connection related           | 1      | 182       | [1]                           |                                                                                                     |
+|0x27      | Wi-Fi channel mode           | 1      | 182       | [1]                           | As written to 0x11                                                                                  |
 |0x28      | Wi-Fi SSID                   | 32     | 183       | [33]                          | ASCII, padded with `0xff`                                                                           |
 |0x29      | ??                           | 3 / 2  | 216       | [1,1,1] / [1,1]               | Byte 1 is shown on the main screen, byte 2 is a charge setting                                      |
 |0x2a      | Flag                         | 1      | 219       | [1]                           |                                                                                                     |
@@ -517,8 +517,17 @@ Single byte.
 
 ### 0x1e - Charge plug status
 
-0000 - Unplugged
-0001 - Plugged in, not charging
+| Byte | Description |
+|--|--|
+| 0 | Charging state. 0=not charging, 1=charging is stopping, 2=charging |
+| 1 | Plug state. 0=unplugged, 1=plugged in and waiting for the charge timer, 2=plugged in, 3=charge timer could not be activated |
+
+The car is plugged in when byte 0 is non-zero or byte 1 is 1 or 2. State 3 is
+seen after unplugging while a charge timer is set, and is an alert.
+
+Examples: `0000` unplugged, `0001` plugged in and waiting for the timer,
+`0002` plugged in, `0202` charging, `0102` unplugged while charging, `0003`
+charge timer error.
 
 ### 0x1f - Charging status
 
@@ -578,8 +587,10 @@ A string with the software version of the ECU.
 
 | Register | Name                       | Description/values     |
 |----------|----------------------------|------------------------|
+| 0x2      | Set air-con (older models) | 16 bytes, see below    |
+| 0x3      | Climate timer on/off?      | 0x1=on 0x2=off, see below |
+| 0x4      | Air-con on/off (older models) | 0x1=on 0x2=off      |
 | 0x5      | Sync time                  | See below              |
-| 0x3      | ??                         | 0x1 / 0x2; sent by the air-con screens, and periodically with 0x2 |
 | 0x6      | Request udpated state      | 0x3                    |
 | 0x7      | Acknowledge 0x13 alert     | 0x1, see below         |
 | 0x8      | Acknowledge 0x14 alert     | 0x1, see below         |
@@ -588,35 +599,89 @@ A string with the software version of the ECU.
 | 0xe      | Save settings??            | Sent after 0xf command |
 | 0xf      | Update settings            | `[id][value]`, see 0x16; `fe00` requests the current settings |
 | 0x10     | Register Wifi client       | 0x1                    |
-| 0x11     | Allow any connection       | 0x0=off 0x1=on         |
+| 0x11     | Wi-Fi channel mode         | 0x0 / 0x1, see below   |
 | 0x12     | Acknowledge 0x1e alert     | 0x1, see below         |
 | 0x13     | Reset PreAC state          | 0x1, acknowledges the 0x10 alert |
-| 0x14     | Set Wi-Fi SSID             | 32 bytes               |
+| 0x14     | Set Wi-Fi SSID             | 32 bytes, see below    |
 | 0x15     | Unregister Wifi client     | 0x1                    |
 | 0x1a     | Set climate timer          | See below              |
 | 0x1b     | Set climate state          | See below              |
 | 0x17     | Cancel charge timer        |                        |
-| 0x18     | Wi-Fi connection setting   | 1 byte                 |
+| 0x18     | Wi-Fi communication setting | 0x0=off 0x1=on, see below |
 | 0x19     | Set charge timer schedule  |                        |
 | 0x1a     | Set climate timer schedule |                        |
-| 0x1c     | Set Wi-Fi channel          | Channel number         |
-| 0x1d     | Set Wi-Fi password         | 32 bytes               |
-| 0x1e     | Power supply               | 0x0, probably stops the power outlet |
+| 0x1c     | Set Wi-Fi channel          | 0x0=channel 3 0x1=channel 8 |
+| 0x1d     | Set Wi-Fi password         | 32 bytes, see below    |
+| 0x1e     | Power supply               | 0x0, see below         |
 
 ### Alert acknowledgements
 
 Some register notifications are alerts that the client acknowledges by
 writing `0x1` to a matching register:
 
-| Notification | Acknowledgement |
-|--------------|-----------------|
-| 0x10         | 0x13            |
-| 0x13         | 0x07, sent right away |
-| 0x14         | 0x08            |
-| 0x1e         | 0x12            |
+| Notification | Alert when             | Meaning                                | Acknowledgement |
+|--------------|------------------------|----------------------------------------|-----------------|
+| 0x10         | byte 0 = 3             | Pre-A/C stopped (door open, low battery or low drive battery temperature) | 0x13 |
+| 0x13         | byte 0 = 1             | Unknown                                | 0x07            |
+| 0x14         | byte 6 = 1-6           | Theft alarm, see below                 | 0x08            |
+| 0x1e         | byte 1 = 3             | Charge timer could not be activated    | 0x12            |
+
+Theft alarm types in byte 6 of 0x14:
+
+| Value | Alarm                          |
+|-------|--------------------------------|
+| 1     | Unauthorized intrusion         |
+| 2     | Illegal vehicle movement       |
+| 3     | Door opened illegally          |
+| 4     | Illegal key used               |
+| 5     | Unauthorized vibration         |
+| 6     | Other illegal access           |
 
 In addition, a client answers a `0x1b` notification by writing its first byte
 to `0x17`.
+
+### 0x02 - Set air-con (older models)
+
+16 bytes:
+
+| Byte(s) | Description |
+|---------|-------------|
+| 0-5     | The current contents of read register 0x22 (air-con schedule) |
+| 6       | The new setting |
+| 7-14    | Air-con settings, the contents of read register 0x19 after its first byte |
+| 15      | Unused |
+
+### 0x03 - Climate timer on/off
+
+Written as `0x1` or `0x2` from the air-con screens, together with setting the
+first byte of the climate timer (read register 0x05) and of read register
+0x19 to the same value. Also written as `0x2` periodically. The exact meaning
+is not confirmed.
+
+### 0x0f - Settings
+
+`fe00` asks the car to send all of its settings again as 0x16 notifications.
+`[id][value]` changes a setting, see read register 0x16.
+
+### 0x1e - Power supply
+
+`0x0` is written from the vehicle power supply (power outlet) screens, probably
+to stop supplying power.
+
+### Wi-Fi management
+
+These change the car's access point. They take effect for every client, so
+use them with care.
+
+| Register | Payload |
+|----------|---------|
+| 0x11     | Wi-Fi channel mode, `0x0` or `0x1`. Read back from register 0x27 |
+| 0x14     | New SSID: up to 32 ASCII characters, padded with `0x00` to 32 bytes |
+| 0x18     | Wi-Fi communication `0x0`=off `0x1`=on. Read back from register 0x0b |
+| 0x1c     | Wi-Fi channel, `0x0`=channel 3 `0x1`=channel 8. Read back from register 0x07 |
+| 0x1d     | Change password, 32 bytes: the current password in bytes 0-15 and the new one in bytes 16-31, each 14 ASCII characters padded with `0x00` |
+
+Passwords may only contain the characters `!` to `~`, except `"` and `,`.
 
 ### 0x05 - Sync Time
 
@@ -790,7 +855,7 @@ setting "charge light cutout"
 
 - off  -> 0x0f=0700
 - 1min -> 0x0f=0701
-- 2min -> 0x0f=0702
+- 3min -> 0x0f=0702
 - 5min -> 0x0f=0703
 - 10min -> 0x0f=0704
 
