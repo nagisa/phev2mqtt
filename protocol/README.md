@@ -131,8 +131,22 @@ Summary:
 |  0x4e | Security init     | car -> client | Initialise security keys (MY14)      |
 |  0xe4 | Security ack      | client -> car | Ack security keys (MY14)             |
 |  0x2f | Keepalive request | car -> client | Sent by car to check client presence |
+|  0xf2 | Start             | client -> car | Client hello carrying its MAC (MY18) |
 |  0xbb | Bad Xor?          | car -> client | Sent when XOR value is incorrect.    |
 |  0xcc | Decode failure    | car -> client | How the car decoded a bad message.   |
+
+Replies use the request type with its nibbles swapped (`0x6f` -> `0xf6`,
+`0x2f` -> `0xf2`, `0x3f` -> `0xf3`). A plain acknowledgement has ack `1`, the
+same register, and a single `0x00` data byte.
+
+### Start (0xf2)
+
+```text
+[f2][0a][00][01][<mac>][00][<cksum>]
+```
+
+Sent by the client after connecting. `<mac>` is the 6-byte MAC address of the
+client's Wi-Fi interface.
 
 ### Ping request (0xf3)
 
@@ -267,53 +281,53 @@ Registers contain the bulk of information on the state of the vehicle.
 
 There seem to be two types of register layout (A/B).
 
-| Register | Name                         | Length | Location  | Fields                        | Description                         |
-|----------|------------------------------|--------|-----------|-------------------------------|-------------------------------------|
-|0x1       | ??                           | 2      | 0         | [1,1]                         |                                     |
-|0x2       | Battery warning              | 4      | 2         | [1,1,1,1]                     |                                     |
-|0x3       | ??                           | 3      | 6         | [1,1,1]                       |                                     |
-|0x4       | Charge timer settings        | 20 / 1 | 10 / ??   | [3,1,3,1,3,1,3,1,3,1] / []    |                                     |
-|0x5       | Climate timer settings       | 16 / 1 | 30 / 235  | [1,2,1,2,1,2,1,2,1,2,1] / [1] |                                     |
-|0x6       | ??                           | 20 / 1 | 74 / 46   | [1,17,1,1] / [1]              | Similar to 0x15                     |
-|0x7       | ??                           | 1      | 237       | [1]                           |                                     |
-|0x8       | ??                           | 1      | 234       | [1]                           |                                     |
-|0x9       | ??                           | 1      | 49        | [1]                           |                                     |
-|0xa       | ??                           | 1      | 50        | [1]                           |                                     |
-|0xb       | ??                           | 1      | 238 / 236 | [1]                           |                                     |
-|0xc       | ??                           | 1      | 51        | [1]                           |                                     |
-|0xd       | ??                           | 1      | 52        | [1]                           |                                     |
-|0xe       | ??                           | 1      | 53        | [1]                           |                                     |
-|0xf       | ??                           | 1      | 54        | [1]                           |                                     |
-|0x10      | AirCon State                 | 3 / 1  | 55        | [1,1,1] / [1]                 |                                     |
-|0x11      | ??                           | 1      | 58        | [1]                           |                                     |
-|0x12      | TimeSync                     | 7      | 59        | [7]                           |                                     |
-|0x13      | ??                           | 1      | 66        | [1]                           |                                     |
-|0x14      | ??                           | 7      | 67        | [6,1]                         |                                     |
-|0x15      | VIN                          | 20     | 246 / 74  | [19,11] / [1,17,1,1]          |                                     |
-|0x16      | ??                           | 8      | 95        | [8]                           | Seems to convey some other settings |
-|0x17      | ??                           | 1      | 103       | [1]                           |                                     |
-|0x18      | ??                           | 4 / 16 | 276 / 104 | [1,1,2] / [5,3,5,3]           |                                     |
-|0x19      | ??                           | 9      | 120       | [1,5,3]                       |                                     |
-|0x1a      | Ignition status              | 5 / 2  | 129       | [1,1,1,1,1] / [1,1]           |                                     |
-|0x1b      | ??                           | 1      | 134       | [1]                           |                                     |
-|0x1c      | AirCon Mode                  | 1      | 136       | [1]                           |                                     |
-|0x1d      | Battery Level / light status | 4      | 137       | [1,1,1,1]                     |                                     |
-|0x1e      | Charge plug status           | 2      | 141       | [1,1]                         |                                     |
-|0x1f      | Charge State                 | 3      | 143       | [1,2]                         |                                     |
-|0x20      | ??                           | 10     | 146       | [2,2,2,2,2]                   |                                     |
-|0x21      | ??                           | 1      | 156       | [1]                           |                                     |
-|0x22      | ??                           | 6      | 157       | [2,2,2]                       |                                     |
-|0x23      | Interior/Hazard Lights + AC? | 5      | 163       | [1,1,1,1,1]                   |                                     |
-|0x24      | Door Lock Status             | 10     | 168       | [1,1,1,1,1,1,1,1,1,1]         |                                     |
-|0x25      | ??                           | 3      | 178       | [1,1,1]                       |                                     |
-|0x26      | ??                           | 1      | 181       | [1]                           |                                     |
-|0x27      | ??                           | 1      | 182       | [1]                           |                                     |
-|0x28      | ??                           | 32     | 183       | [33]                          |                                     |
-|0x29      | ??                           | 3 / 2  | 216       | [1,1,1] / [1,1]               |                                     |
-|0x2a      | ??                           | 1      | 219       | [1]                           |                                     |
-|0x2b      | ??                           | 10     | 220       | [10]                          |                                     |
-|0x2c      | ??                           | 1      | 233       | [1]                           |                                     |
-|0xc0      | ECU Version                  | 13     | 220       | [10,2,1]                      |                                     |
+| Register | Name                         | Length | Location  | Fields                        | Description                                                                                         |
+|----------|------------------------------|--------|-----------|-------------------------------|-----------------------------------------------------------------------------------------------------|
+|0x1       | ??                           | 2      | 0         | [1,1]                         | Sent alongside the connection handshake, e.g. `0102`                                                |
+|0x2       | Battery warning              | 4      | 2         | [1,1,1,1]                     |                                                                                                     |
+|0x3       | Flags                        | 3      | 6         | [1,1,1]                       | Bit flags, e.g. `011573`. Byte 1 bit 2 relates to client registration, byte 2 bit 4 to car settings |
+|0x4       | Charge timer settings        | 20 / 1 | 10 / ??   | [3,1,3,1,3,1,3,1,3,1] / []    |                                                                                                     |
+|0x5       | Climate timer settings       | 16 / 1 | 30 / 235  | [1,2,1,2,1,2,1,2,1,2,1] / [1] |                                                                                                     |
+|0x6       | ??                           | 20 / 1 | 74 / 46   | [1,17,1,1] / [1]              | Similar to 0x15, with a different first byte, e.g. `00` VIN `0002`                                         |
+|0x7       | Wi-Fi channel                | 1      | 237       | [1]                           |                                                                                                     |
+|0x8       | ??                           | 1      | 234       | [1]                           |                                                                                                     |
+|0x9       | ??                           | 1      | 49        | [1]                           |                                                                                                     |
+|0xa       | ??                           | 1      | 50        | [1]                           |                                                                                                     |
+|0xb       | ??                           | 1      | 238 / 236 | [1]                           | Wi-Fi / version related                                                                             |
+|0xc       | Air-con related              | 1      | 51        | [1]                           | Changes `01` -> `04` when the charger is unplugged                                                  |
+|0xd       | Air-con related              | 1      | 52        | [1]                           | Changes `01` -> `02` when the charger is unplugged                                                  |
+|0xe       | Charge setting               | 1      | 53        | [1]                           |                                                                                                     |
+|0xf       | ??                           | 1      | 54        | [1]                           | Not used by the official app, e.g. `00`                                                             |
+|0x10      | AirCon State                 | 3 / 1  | 55        | [1,1,1] / [1]                 | Alert, acknowledged by writing 0x13                                                                 |
+|0x11      | ??                           | 1      | 58        | [1]                           | Not used by the official app, e.g. `00`                                                             |
+|0x12      | TimeSync                     | 7      | 59        | [7]                           |                                                                                                     |
+|0x13      | Alert                        | 1      | 66        | [1]                           | Acknowledged by writing 0x07                                                                        |
+|0x14      | Alert                        | 7      | 67        | [6,1]                         | Acknowledged by writing 0x08                                                                        |
+|0x15      | VIN                          | 20     | 246 / 74  | [19,11] / [1,17,1,1]          |                                                                                                     |
+|0x16      | Vehicle settings             | 8      | 95        | [8]                           | See below                                                                                           |
+|0x17      | Charge timer state           | 1      | 103       | [1]                           |                                                                                                     |
+|0x18      | ??                           | 4 / 16 | 276 / 104 | [1,1,2] / [5,3,5,3]           | Bytes 0-1 are state flags                                                                           |
+|0x19      | Air-con settings             | 9      | 120       | [1,5,3]                       |                                                                                                     |
+|0x1a      | Ignition status              | 5 / 2  | 129       | [1,1,1,1,1] / [1,1]           |                                                                                                     |
+|0x1b      | Charge / time setting        | 1      | 134       | [1]                           | Answered by writing its first byte to 0x17                                                          |
+|0x1c      | AirCon Mode                  | 1      | 136       | [1]                           |                                                                                                     |
+|0x1d      | Battery Level / light status | 4      | 137       | [1,1,1,1]                     |                                                                                                     |
+|0x1e      | Charge plug status           | 2      | 141       | [1,1]                         | Alert, acknowledged by writing 0x12                                                                 |
+|0x1f      | Charge State                 | 3      | 143       | [1,2]                         |                                                                                                     |
+|0x20      | Charge settings              | 10     | 146       | [2,2,2,2,2]                   |                                                                                                     |
+|0x21      | ??                           | 1      | 156       | [1]                           |                                                                                                     |
+|0x22      | Air-con schedule             | 6      | 157       | [2,2,2]                       |                                                                                                     |
+|0x23      | Interior/Hazard Lights + AC? | 5      | 163       | [1,1,1,1,1]                   |                                                                                                     |
+|0x24      | Door Lock Status             | 10     | 168       | [1,1,1,1,1,1,1,1,1,1]         |                                                                                                     |
+|0x25      | ??                           | 3      | 178       | [1,1,1]                       | Not used by the official app, e.g. `0e00ff`                                                         |
+|0x26      | Alert                        | 1      | 181       | [1]                           | Raised while 0x1a byte 0 is 1-6                                                                     |
+|0x27      | Connection related           | 1      | 182       | [1]                           |                                                                                                     |
+|0x28      | Wi-Fi SSID                   | 32     | 183       | [33]                          | ASCII, padded with `0xff`                                                                           |
+|0x29      | ??                           | 3 / 2  | 216       | [1,1,1] / [1,1]               | Byte 1 is shown on the main screen, byte 2 is a charge setting                                      |
+|0x2a      | Flag                         | 1      | 219       | [1]                           |                                                                                                     |
+|0x2b      | Version information          | 10     | 220       | [10]                          | Same location as 0xc0                                                                               |
+|0x2c      | Flag                         | 1      | 233       | [1]                           |                                                                                                     |
+|0xc0      | ECU Version                  | 13     | 220       | [10,2,1]                      |                                                                                                     |
 
 ### 0x02 - Battery warning
 
@@ -368,7 +382,7 @@ __must be converted from big endian to little endian__ to be useful
 3 bytes.
 
 | Byte(s) | Description |
-|---------|-------------|
+|----------|-------------|
 | 0 | Preconditioning state [0 = off, 2 = on, 3 = cancelled by open door/low battery] |
 | 1 | Unknown |
 | 2 | Unknown |
@@ -389,6 +403,82 @@ Vin info and regstration status.
 |0 | Unknown |
 |1-18 | VIN (ascii) |
 |19 | Number of registered clients |
+
+### 0x16 - Vehicle settings
+
+8 bytes, carrying up to three vehicle settings. The car sends the whole
+settings table as a series of these at the start of a connection, and again
+when the client writes `fe00` to register 0x0f. It does not send them
+periodically.
+
+```text
+[flag][a0][b0][a1][b1][a2][b2][00]
+```
+
+The flag is `02` or `00`; its meaning is unknown. Each `[a][b]` pair is one
+setting, an ID of 0 means the slot is unused:
+
+| Field   | Bits                         | Description                                          |
+|---------|------------------------------|------------------------------------------------------|
+| ID      | `a & 0x3f`                   | Setting ID, 1-60                                     |
+| Value   | `(a >> 6) \| (b & 1) << 2`   | Selected option, 0-6. 7 means the car lacks the setting |
+| Allowed | `b >> 1`                     | Bitmask of the options the car accepts, bit n is option n |
+
+For example `00c41e850e861e00` holds settings 0x04=3 (allowed 0-3), 0x05=2
+(allowed 0-2) and 0x06=2 (allowed 0-3).
+
+A setting is changed by writing `[id][value]` to register 0x0f, followed by
+`00` to register 0x0e. The car confirms the change with a 0x16 update carrying
+the new value.
+
+Known settings and their options:
+
+| ID   | Setting                                          | Options |
+|------|--------------------------------------------------|---------|
+| 0x01 | Operation in key position                        | 0=ignition on or accessory, 1=ignition on |
+| 0x02 | Lane-change signals (flash three times with 1 touch) | 0=off, 1=on |
+| 0x03 | Turn signal lights answerback                    | 0=lock once, unlock twice; 1=lock once, unlock off; 2=lock off, unlock twice; 3=lock twice, unlock once; 4=lock off, unlock once; 5=lock twice, unlock off; 6=off |
+| 0x04 | Windshield wipers intermittent operation         | 0=fixed (4 s), 1=adjustable, 2=adjustable & speed sensitive, 3=adjustable & rain sensitive |
+| 0x05 | Wipers linked to washer                          | 0=off, 1=on, 2=on with delayed finishing wipe |
+| 0x06 | Rear wiper intermittent interval                 | 0=0 s, 1=4 s, 2=8 s, 3=16 s |
+| 0x07 | Charging lid light auto cut-out                  | 0=off, 1=1 min, 2=3 min, 3=5 min, 4=10 min |
+| 0x08 | Auto fold mirrors                                | 0=off, 1=open by vehicle speed, 2=by ignition and driver door, 3=by keyless entry lock/unlock, 4=by keyless operation lock/unlock |
+| 0x09 | Auto light sensitivity                           | 0=early, 1=somewhat early, 2=normal, 3=somewhat late, 4=late |
+| 0x0a | Auto light linked to wiper                       | 0=off, 1=on |
+| 0x0b | Dome light duration after door is closed         | 0=0 s, 1=7.5 s, 2=15 s, 3=30 s, 4=1 min, 5=2 min, 6=3 min |
+| 0x0c | Headlight auto-cutout                            | 0=off, others uncertain |
+| 0x0d | Interior light auto-cutout time                  | 0=off, 1=3 min, 2=30 min, 3=60 min |
+| 0x0e | Activation time for lane-change signals          | 0=short, 1=long |
+| 0x0f | Comfort washer                                   | 0=off, 1=on |
+| 0x10 | Automatic unlock                                 | 0=off, 1=when shifted to park, 2=same with windows unlocked, 3=when ignition turned to lock, 4=same with windows unlocked |
+| 0x11 | Unlock operation                                 | 0=all doors, 1=driver's door only |
+| 0x13 | Lock button pushes for dead lock                 | 0=2 times, 1=1 time |
+| 0x14 | Horn answerback at keyless entry lock            | 0=off, 1=one push, 2=one push at daytime, 3=two pushes, 4=two pushes at daytime |
+| 0x15 | Keyless operation answerback beeps               | 0=all off, 1=keyless operation, 2=keyless entry, 3=all on |
+| 0x16 | Automatic relock after remote unlock             | 0=30 s, 1=1 min, 2=2 min, 3=3 min |
+| 0x18 | Timer function after ignition off                | 0=0 s, 1=30 s, 2=3 min, 3=10 min |
+| 0x1a | Multi mode keyless entry                         | 0=off, 1=power window & door mirror open/close, 2=power window open/close, 3=power window close & door mirror open/close, 4=door mirror open/close, 5=power window close |
+| 0x1c | Duration of horn answerback                      | 0=short, 1=long |
+| 0x1d | Rear wiper activated in reverse                  | 0=when rear wiper on, 1=when front or rear wiper on |
+| 0x20 | Remote unlock inactivation after locking         | 0=off, 1=3 s, 2=5 s |
+| 0x21 | Horn answerback at remote engine start           | 0=off, 1=on |
+| 0x22 | Open operation after ignition off                | 0=on, 1=off |
+| 0x23 | Power window prohibited by lock-switch           | 0=all doors, 1=driver's door only |
+| 0x24 | Auto cut of ACC power                            | 0=off, 1=30 min, 2=60 min |
+| 0x2a | Headlights on when exiting vehicle               | 0=off, 1=15 s, 2=30 s, 3=1 min, 4=3 min |
+| 0x2b | Exterior lights on with remote unlock            | 0=off, 1=parking lights, 2=headlights |
+| 0x32 | Recirculation control                            | 0=manual, 1=automatic |
+| 0x33 | A/C switch control                               | 0=manual, 1=automatic |
+| 0x35 | Eco mode                                         | 0=eco, 1=comfort |
+| 0x36 | Foot / defroster airflow ratio                   | 0=normal, 1=more to foot, 2=more to defroster |
+| 0x37 | Face / foot airflow ratio                        | 0=normal, 1=more to face, 2=more to foot |
+| 0x38 | Automatic rear defrost at start                  | 0=off, 1=on |
+| 0x39 | Start A/C or heater at door unlock               | 0=off, 1=on |
+| 0x3a | Slight defroster airflow in foot mode            | 0=off, 1=on |
+| 0x3c | Fast idle for higher heater performance when stopped | 0=off, 1=on |
+
+IDs 0x12, 0x17, 0x19, 0x1b, 0x1e, 0x1f, 0x25-0x29, 0x2c-0x31, 0x34 and 0x3b
+also appear but have no known name.
 
 ### 0x17 - Charge timer state
 
@@ -489,26 +579,51 @@ A string with the software version of the ECU.
 | Register | Name                       | Description/values     |
 |----------|----------------------------|------------------------|
 | 0x5      | Sync time                  | See below              |
+| 0x3      | ??                         | 0x1 / 0x2; sent by the air-con screens, and periodically with 0x2 |
 | 0x6      | Request udpated state      | 0x3                    |
+| 0x7      | Acknowledge 0x13 alert     | 0x1, see below         |
+| 0x8      | Acknowledge 0x14 alert     | 0x1, see below         |
 | 0xa      | Set head lights            | 0x1=on 0x2=off         |
 | 0xb      | Set parking lights         | 0x1=on 0x2=off         |
 | 0xe      | Save settings??            | Sent after 0xf command |
-| 0xf      | Update settings            |                        |
+| 0xf      | Update settings            | `[id][value]`, see 0x16; `fe00` requests the current settings |
 | 0x10     | Register Wifi client       | 0x1                    |
-| 0x13     | Reset PreAC state          | 0x1                    |
+| 0x11     | Allow any connection       | 0x0=off 0x1=on         |
+| 0x12     | Acknowledge 0x1e alert     | 0x1, see below         |
+| 0x13     | Reset PreAC state          | 0x1, acknowledges the 0x10 alert |
+| 0x14     | Set Wi-Fi SSID             | 32 bytes               |
 | 0x15     | Unregister Wifi client     | 0x1                    |
 | 0x1a     | Set climate timer          | See below              |
 | 0x1b     | Set climate state          | See below              |
 | 0x17     | Cancel charge timer        |                        |
+| 0x18     | Wi-Fi connection setting   | 1 byte                 |
 | 0x19     | Set charge timer schedule  |                        |
 | 0x1a     | Set climate timer schedule |                        |
+| 0x1c     | Set Wi-Fi channel          | Channel number         |
+| 0x1d     | Set Wi-Fi password         | 32 bytes               |
+| 0x1e     | Power supply               | 0x0, probably stops the power outlet |
+
+### Alert acknowledgements
+
+Some register notifications are alerts that the client acknowledges by
+writing `0x1` to a matching register:
+
+| Notification | Acknowledgement |
+|--------------|-----------------|
+| 0x10         | 0x13            |
+| 0x13         | 0x07, sent right away |
+| 0x14         | 0x08            |
+| 0x1e         | 0x12            |
+
+In addition, a client answers a `0x1b` notification by writing its first byte
+to `0x17`.
 
 ### 0x05 - Sync Time
 
 8 bytes.
 
 | Byte(s) | Description   |
-|---------|---------------|
+|----------|---------------|
 |       0 | Year - 2000   |
 |       1 | Month         |
 |       2 | Day of month  |

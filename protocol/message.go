@@ -1,7 +1,6 @@
 package protocol
 
 import (
-	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	log "github.com/sirupsen/logrus"
@@ -428,8 +427,15 @@ func (r *RegisterSettings) Raw() string {
 }
 
 func (r *RegisterSettings) String() string {
-	value := binary.LittleEndian.Uint64(r.raw)
-	return fmt.Sprintf("Car Settings: %016x", value)
+	settings, err := DecodeSettings(r.raw)
+	if err != nil {
+		return fmt.Sprintf("Car Settings: %s (%v)", hex.EncodeToString(r.raw), err)
+	}
+	parts := make([]string, len(settings))
+	for i, s := range settings {
+		parts[i] = s.String()
+	}
+	return "Car Settings: " + strings.Join(parts, ", ")
 }
 
 func (r *RegisterSettings) Register() byte {
