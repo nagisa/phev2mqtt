@@ -84,7 +84,7 @@ func (p *PhevMessage) LogFields() log.Fields {
 	case CmdOutSend, CmdInResp:
 		fields["register"] = fmt.Sprintf("%02x", p.Register)
 		fields["payload"] = hex.EncodeToString(p.Data)
-		if p.Reg != nil {
+		if p.Reg != nil && p.Reg.String() != "" {
 			fields["value"] = p.Reg.String()
 		}
 	case CmdInBadEncoding:
@@ -244,6 +244,12 @@ func (p *PhevMessage) DecodeFromBytes(data []byte, key *SecurityKey) error {
 			p.Reg = new(RegisterWIFISSID)
 		case LightStatusRegister:
 			p.Reg = new(RegisterLightStatus)
+		case TheftAlarmRegister:
+			p.Reg = new(RegisterTheftAlarm)
+		case AlertRegister:
+			p.Reg = new(RegisterAlert)
+		case WIFIChannelRegister:
+			p.Reg = new(RegisterWIFIChannel)
 		default:
 			p.Reg = new(RegisterGeneric)
 		}
@@ -333,6 +339,7 @@ const (
 	LightStatusRegister      = 0x23
 	DoorStatusRegister       = 0x24
 	WIFISSIDRegister         = 0x28
+	WIFIChannelRegister      = 0x07
 	ECUVersionRegister       = 0xc0
 
 	AlertRegister               = 0x13
@@ -382,6 +389,7 @@ type Register interface {
 	Decode(*PhevMessage)
 	Encode() *PhevMessage
 	Raw() string
+	// String describes the decoded value, empty if the register is not understood.
 	String() string
 	Register() byte
 }
@@ -407,8 +415,9 @@ func (r *RegisterGeneric) Raw() string {
 	return hex.EncodeToString(r.Value)
 }
 
+// String is empty, the register is not understood beyond its raw data.
 func (r *RegisterGeneric) String() string {
-	return fmt.Sprintf("g(0x%02x): %s", r.Reg, r.Raw())
+	return ""
 }
 
 func (r *RegisterGeneric) Register() byte {
@@ -471,7 +480,7 @@ func (r *RegisterSettings) Raw() string {
 func (r *RegisterSettings) String() string {
 	settings, err := DecodeSettings(r.raw)
 	if err != nil {
-		return fmt.Sprintf("Car Settings: %s (%v)", hex.EncodeToString(r.raw), err)
+		return fmt.Sprintf("Car Settings: %v", err)
 	}
 	parts := make([]string, len(settings))
 	for i, s := range settings {
@@ -832,7 +841,10 @@ func (r *RegisterPreACState) Register() byte {
 
 type RegisterACOperStatus struct {
 	Operating bool
-	raw       []byte
+	// Ignition is the ignition switch position: off, accessory or on. Empty if
+	// not known.
+	Ignition string
+	raw      []byte
 }
 
 func (r *RegisterACOperStatus) Decode(m *PhevMessage) {
@@ -842,6 +854,9 @@ func (r *RegisterACOperStatus) Decode(m *PhevMessage) {
 		return
 	}
 	r.Operating = m.Data[1] == 1
+	if len(m.Data) == 5 {
+		r.Ignition = map[byte]string{0x0: "off", 0x3: "accessory", 0x4: "on"}[m.Data[0]]
+	}
 	r.raw = m.Data
 }
 
@@ -850,10 +865,14 @@ func (r *RegisterACOperStatus) Raw() string {
 }
 
 func (r *RegisterACOperStatus) String() string {
+	ac := "AC off"
 	if r.Operating {
-		return "AC on"
+		ac = "AC on"
 	}
-	return "AC off"
+	if r.Ignition == "" {
+		return ac
+	}
+	return fmt.Sprintf("%s, ignition %s", ac, r.Ignition)
 }
 
 func (r *RegisterACOperStatus) Register() byte {
@@ -923,6 +942,8 @@ func (r *RegisterACMode) Register() byte {
 
 type RegisterChargePlug struct {
 	Connected bool
+	// State is unplugged, waiting-for-timer, plugged-in, charging or stopping.
+	State string
 	// TimerError is set when the charge timer could not be activated.
 	TimerError bool
 	raw        []byte
@@ -937,6 +958,18 @@ func (r *RegisterChargePlug) Decode(m *PhevMessage) {
 	// after the plug was pulled.
 	r.Connected = m.Data[0] > 0 || m.Data[1] == 1 || m.Data[1] == 2
 	r.TimerError = m.Data[1] == 3
+	switch {
+	case m.Data[0] == 2:
+		r.State = "charging"
+	case m.Data[0] == 1:
+		r.State = "stopping"
+	case m.Data[1] == 1:
+		r.State = "waiting-for-timer"
+	case m.Data[1] == 2:
+		r.State = "plugged-in"
+	default:
+		r.State = "unplugged"
+	}
 	r.raw = m.Data
 }
 
@@ -956,10 +989,10 @@ func (r *RegisterChargePlug) Raw() string {
 }
 
 func (r *RegisterChargePlug) String() string {
-	if r.Connected {
-		return "Charger connected"
+	if r.TimerError {
+		return fmt.Sprintf("Charge plug %s, charge timer could not be activated", r.State)
 	}
-	return "Charger disconnected"
+	return fmt.Sprintf("Charge plug %s", r.State)
 }
 
 func (r *RegisterChargePlug) Register() byte {
@@ -1065,4 +1098,108 @@ func (r *RegisterLightStatus) String() string {
 
 func (r *RegisterLightStatus) Register() byte {
 	return LightStatusRegister
+}
+
+// RegisterTheftAlarm is the theft alarm register. Bytes 0-5 are probably the
+// time of the alarm, byte 6 its type.
+type RegisterTheftAlarm struct {
+	// Alarm describes the alarm, empty if there is none.
+	Alarm string
+	raw   []byte
+}
+
+func (r *RegisterTheftAlarm) Decode(m *PhevMessage) {
+	r.Alarm, _ = TheftAlarm(m.Data)
+	r.raw = m.Data
+}
+
+func (r *RegisterTheftAlarm) Encode() *PhevMessage {
+	return &PhevMessage{
+		Register: r.Register(),
+		Data:     r.raw,
+	}
+}
+
+func (r *RegisterTheftAlarm) Raw() string {
+	return hex.EncodeToString(r.raw)
+}
+
+func (r *RegisterTheftAlarm) String() string {
+	if r.Alarm == "" {
+		return "No theft alarm"
+	}
+	return "Theft alarm: " + r.Alarm
+}
+
+func (r *RegisterTheftAlarm) Register() byte {
+	return TheftAlarmRegister
+}
+
+// RegisterAlert is an alert of unknown meaning.
+type RegisterAlert struct {
+	Raised bool
+	raw    []byte
+}
+
+func (r *RegisterAlert) Decode(m *PhevMessage) {
+	_, r.Raised = AlertAckRegister(m.Register, m.Data)
+	r.raw = m.Data
+}
+
+func (r *RegisterAlert) Encode() *PhevMessage {
+	return &PhevMessage{
+		Register: r.Register(),
+		Data:     r.raw,
+	}
+}
+
+func (r *RegisterAlert) Raw() string {
+	return hex.EncodeToString(r.raw)
+}
+
+func (r *RegisterAlert) String() string {
+	if r.Raised {
+		return "Unidentified alert raised"
+	}
+	return "No unidentified alert"
+}
+
+func (r *RegisterAlert) Register() byte {
+	return AlertRegister
+}
+
+// RegisterWIFIChannel is the channel of the car's access point.
+type RegisterWIFIChannel struct {
+	// Channel is 0 if not known.
+	Channel int
+	raw     []byte
+}
+
+func (r *RegisterWIFIChannel) Decode(m *PhevMessage) {
+	if len(m.Data) == 1 {
+		r.Channel = map[byte]int{0x0: 3, 0x1: 8}[m.Data[0]]
+	}
+	r.raw = m.Data
+}
+
+func (r *RegisterWIFIChannel) Encode() *PhevMessage {
+	return &PhevMessage{
+		Register: r.Register(),
+		Data:     r.raw,
+	}
+}
+
+func (r *RegisterWIFIChannel) Raw() string {
+	return hex.EncodeToString(r.raw)
+}
+
+func (r *RegisterWIFIChannel) String() string {
+	if r.Channel == 0 {
+		return ""
+	}
+	return fmt.Sprintf("Wi-Fi channel %d", r.Channel)
+}
+
+func (r *RegisterWIFIChannel) Register() byte {
+	return WIFIChannelRegister
 }

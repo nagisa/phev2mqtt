@@ -161,7 +161,7 @@ func handleRegisters(m *protocol.PhevMessage) {
 				"old":      d,
 				"new":      data,
 			})
-			if m.Reg != nil {
+			if m.Reg != nil && m.Reg.String() != "" {
 				logger = logger.WithField("decoded", m.Reg.String())
 			}
 			logger.Info("register changed")

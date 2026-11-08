@@ -103,6 +103,7 @@ ignored, and logged, while the car isn't connected.
 | charge/charging | boolean | | Whether the battery is charging |
 | charge/remaining | integer, min | | Minutes left, if charging |
 | charge/plug | boolean | | Whether the charging plug is connected |
+| charge/plug-state | enum *unplugged*, *waiting-for-timer*, *plugged-in*, *charging*, *stopping* | | Charging plug and charging state |
 | charge/cancel-timer | enum *cancel* | yes, not retained | Cancel the charge timer |
 | doors/locked | boolean | | Whether the car is locked |
 | doors/driver | boolean | | Whether the door is open |
@@ -120,6 +121,7 @@ ignored, and logged, while the car isn't connected.
 | car/vin | string | | VIN of the car |
 | car/ecu-version | string | | ECU version |
 | car/registrations | integer | | Number of wifi clients registered to the car |
+| car/ignition | enum *off*, *accessory*, *on* | | Ignition switch position |
 | connection/state | enum *offline*, *waiting-for-ip*, *connecting*, *online* | | Wifi connection status to the car |
 | connection/command | enum *off*, *on*, *restart* | yes, not retained | Change the car connection state |
 

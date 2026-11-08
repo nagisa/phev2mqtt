@@ -152,6 +152,7 @@ var description = homieDescription{
 			"charging":     {Name: "Charging", Datatype: "boolean"},
 			"remaining":    {Name: "Time remaining", Datatype: "integer", Unit: "min"},
 			"plug":         {Name: "Plug", Datatype: "boolean", Format: "unplugged,connected"},
+			"plug-state":   {Name: "Plug state", Datatype: "enum", Format: "unplugged,waiting-for-timer,plugged-in,charging,stopping"},
 			"cancel-timer": {Name: "Cancel charge timer", Datatype: "enum", Format: "cancel", Settable: true, Retained: notRetained},
 		}},
 		"doors": {Name: "Doors", Properties: map[string]homieProperty{
@@ -177,6 +178,7 @@ var description = homieDescription{
 			"vin":           {Name: "VIN", Datatype: "string"},
 			"ecu-version":   {Name: "ECU version", Datatype: "string"},
 			"registrations": {Name: "Registered clients", Datatype: "integer"},
+			"ignition":      {Name: "Ignition", Datatype: "enum", Format: "off,accessory,on"},
 		}},
 		"connection": {Name: "Connection", Properties: map[string]homieProperty{
 			"state":   {Name: "State", Datatype: "enum", Format: "offline,waiting-for-ip,connecting,online"},
@@ -869,30 +871,32 @@ func (m *mqttClient) publishRegister(msg *protocol.PhevMessage) {
 	case *protocol.RegisterLightStatus:
 		m.publishBool("lights/interior", reg.Interior)
 		m.publishBool("lights/hazard", reg.Hazard)
+	case *protocol.RegisterACOperStatus:
+		if reg.Ignition != "" {
+			m.publish("car/ignition", reg.Ignition)
+		}
 	case *protocol.RegisterChargePlug:
 		m.publishBool("charge/plug", reg.Connected)
+		m.publish("charge/plug-state", reg.State)
 		alert := ""
 		if reg.TimerError {
 			alert = "Charge timer could not be activated"
 		}
 		m.publishAlert("charge-timer-error", alert)
-	default:
-		switch msg.Register {
-		case protocol.TheftAlarmRegister:
-			if alarm, ok := protocol.TheftAlarm(msg.Data); ok {
-				log.WithFields(log.Fields{"alarm": alarm, "data": hex.EncodeToString(msg.Data)}).Warn("theft alarm")
-				m.publishAlert("theft-alarm", "Theft alarm: "+alarm)
-			}
-		case protocol.AlertRegister:
-			// What this alert means is not known. Publishing it lets it be matched with what
-			// happened to the car.
-			alert := ""
-			if _, ok := protocol.AlertAckRegister(msg.Register, msg.Data); ok {
-				log.WithField("data", hex.EncodeToString(msg.Data)).Warn("unidentified alert")
-				alert = "The car raised an unidentified alert (register 13)"
-			}
-			m.publishAlert("unidentified", alert)
+	case *protocol.RegisterTheftAlarm:
+		if reg.Alarm != "" {
+			log.WithFields(log.Fields{"alarm": reg.Alarm, "data": reg.Raw()}).Warn("theft alarm")
+			m.publishAlert("theft-alarm", "Theft alarm: "+reg.Alarm)
 		}
+	case *protocol.RegisterAlert:
+		// What this alert means is not known. Publishing it lets it be matched with what
+		// happened to the car.
+		alert := ""
+		if reg.Raised {
+			log.WithField("data", reg.Raw()).Warn("unidentified alert")
+			alert = "The car raised an unidentified alert (register 13)"
+		}
+		m.publishAlert("unidentified", alert)
 	}
 }
 

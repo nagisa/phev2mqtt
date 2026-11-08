@@ -71,7 +71,7 @@ func Run(cmd *cobra.Command, args []string) {
 						"new":      dataStr,
 					})
 					registers[m.Register] = dataStr
-					if _, ok := m.Reg.(*protocol.RegisterGeneric); !ok {
+					if m.Reg.String() != "" {
 						logger = logger.WithField("decoded", m.Reg.String())
 					}
 					logger.Info("register changed")
