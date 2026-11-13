@@ -242,11 +242,8 @@ func (c *Client) Connect(ctx context.Context) error {
 		case <-c.done:
 		}
 	}()
-	// Listen before reading, so manage sees the start request even if the car sends it at once.
-	ml := c.AddListener()
 	go c.reader()
 	go c.writer()
-	go c.manage(ml)
 	return nil
 }
 
@@ -349,7 +346,7 @@ func (c *Client) nextRecvMsg(deadline time.Time) (*protocol.PhevMessage, error) 
 }
 
 // signalStarted tells Start that the car sent a start request. The car repeats the request,
-// and nothing reads this after Start returned, so a full channel must not block manage.
+// and nothing reads this after Start returned, so a full channel must not block the reader.
 func (c *Client) signalStarted() {
 	select {
 	case c.started <- struct{}{}:
@@ -357,61 +354,56 @@ func (c *Client) signalStarted() {
 	}
 }
 
-// manages the connection, handling control messages.
-func (c *Client) manage(ml *Listener) {
-	// Once this returns nothing drains the listener, so it would only fill up and warn.
-	defer c.RemoveListener(ml)
-	defer close(c.started)
-	for m := range ml.C {
-		switch m.Type {
-		case protocol.CmdInResp:
-			if m.Ack != protocol.Request {
-				break
-			}
-			if m.Register == protocol.SettingsRegister {
-				c.Settings.FromRegister(m.Data)
-			}
-			// The register numbers are only known for MY18.
-			if ack, ok := protocol.AlertAckRegister(m.Register, m.Data); ok && c.ModelYear == ModelYear18 {
-				c.ackAlert(m, ack)
-			}
-		case protocol.CmdInStartResp:
-			if err := c.SendMessage(context.Background(), protocol.NewPingRequestMessage(0xa)); err != nil {
-				return
-			}
-		case protocol.CmdInMy18StartReq:
-			if m.Ack != protocol.Request {
-				break // The car acknowledging our rekey request.
-			}
-			c.ModelYear = ModelYear18
-			if err := c.SendMessage(context.Background(), &protocol.PhevMessage{
-				Type:     protocol.CmdOutMy18StartResp,
-				Register: 0x1,
-				Ack:      protocol.Ack,
-				Xor:      m.Xor,
-				Data:     []byte{0x0},
-			}); err != nil {
-				return
-			}
-			log.WithFields(m.LogFields()).WithField("model_year", c.ModelYear).Debug("received a start request")
-			c.signalStarted()
-		case protocol.CmdInMy14StartReq:
-			if m.Ack != protocol.Request {
-				break // The car acknowledging our rekey request.
-			}
-			c.ModelYear = ModelYear14
-			if err := c.SendMessage(context.Background(), &protocol.PhevMessage{
-				Type:     protocol.CmdOutMy14StartResp,
-				Register: 0x1,
-				Ack:      protocol.Ack,
-				Xor:      m.Xor,
-				Data:     []byte{0x0},
-			}); err != nil {
-				return
-			}
-			log.WithFields(m.LogFields()).WithField("model_year", c.ModelYear).Debug("received a start request")
-			c.signalStarted()
+// handle handles the control messages. The reader calls it for every message before anyone else
+// sees it, so that none are dropped when the car's messages pile up during a Wi-Fi stall and
+// arrive at once.
+func (c *Client) handle(m *protocol.PhevMessage) {
+	switch m.Type {
+	case protocol.CmdInResp:
+		if m.Ack != protocol.Request {
+			break
 		}
+		if m.Register == protocol.SettingsRegister {
+			c.Settings.FromRegister(m.Data)
+		}
+		// The register numbers are only known for MY18.
+		if ack, ok := protocol.AlertAckRegister(m.Register, m.Data); ok && c.ModelYear == ModelYear18 {
+			c.ackAlert(m, ack)
+		}
+	case protocol.CmdInStartResp:
+		c.SendMessage(context.Background(), protocol.NewPingRequestMessage(0xa)) // Fails only once closed.
+	case protocol.CmdInMy18StartReq:
+		if m.Ack != protocol.Request {
+			break // The car acknowledging our rekey request.
+		}
+		c.ModelYear = ModelYear18
+		if err := c.SendMessage(context.Background(), &protocol.PhevMessage{
+			Type:     protocol.CmdOutMy18StartResp,
+			Register: 0x1,
+			Ack:      protocol.Ack,
+			Xor:      m.Xor,
+			Data:     []byte{0x0},
+		}); err != nil {
+			return
+		}
+		log.WithFields(m.LogFields()).WithField("model_year", c.ModelYear).Debug("received a start request")
+		c.signalStarted()
+	case protocol.CmdInMy14StartReq:
+		if m.Ack != protocol.Request {
+			break // The car acknowledging our rekey request.
+		}
+		c.ModelYear = ModelYear14
+		if err := c.SendMessage(context.Background(), &protocol.PhevMessage{
+			Type:     protocol.CmdOutMy14StartResp,
+			Register: 0x1,
+			Ack:      protocol.Ack,
+			Xor:      m.Xor,
+			Data:     []byte{0x0},
+		}); err != nil {
+			return
+		}
+		log.WithFields(m.LogFields()).WithField("model_year", c.ModelYear).Debug("received a start request")
+		c.signalStarted()
 	}
 }
 
@@ -443,6 +435,17 @@ func (c *Client) ackAlert(m *protocol.PhevMessage, ack byte) {
 	}()
 }
 
+// A messageKey tells which messages supersede each other. The car repeats a message until it is
+// answered, so after a Wi-Fi stall the repeats arrive at once, and only the last needs an answer.
+// The repeated start requests differ in their key material, so they are not plain duplicates.
+type messageKey struct {
+	typ, ack, register byte
+}
+
+func keyOf(m *protocol.PhevMessage) messageKey {
+	return messageKey{m.Type, m.Ack, m.Register}
+}
+
 func (c *Client) reader() {
 	for {
 		c.conn.(*net.TCPConn).SetReadDeadline(time.Now().Add(30 * time.Second))
@@ -458,9 +461,18 @@ func (c *Client) reader() {
 			log.WithError(err).Warn("could not reset systemd watchdog")
 		}
 		messages := protocol.NewFromBytes(data[:n], c.key)
-		for _, m := range messages {
+		last := map[messageKey]int{}
+		for i, m := range messages {
+			last[keyOf(m)] = i
+		}
+		for i, m := range messages {
 			c.rxMessages.Add(1)
 			log.WithFields(m.LogFields()).Debug("received a message")
+			if last[keyOf(m)] != i {
+				log.WithFields(m.LogFields()).Debug("ignoring a message superseded in the same read")
+				continue
+			}
+			c.handle(m)
 			c.lMu.Lock()
 			for _, l := range c.listeners {
 				l.Send(m)
@@ -470,6 +482,7 @@ func (c *Client) reader() {
 		}
 	}
 	c.shutdown()
+	close(c.started)
 	close(c.Recv)
 	c.lMu.Lock()
 	for _, l := range c.listeners {
@@ -494,7 +507,7 @@ func (c *Client) writer() {
 	var queue []*protocol.PhevMessage
 	var rekeyDeadline <-chan time.Time
 	// The type of the start responses we sent, telling the car's model year. Kept here rather
-	// than read from ModelYear, which manage updates concurrently.
+	// than read from ModelYear, which the reader updates concurrently.
 	var startResponse byte
 	rekey := func(why string) error {
 		log.WithField("reason", why).Debug("asking the car to rekey")
